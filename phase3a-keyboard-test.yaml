@@ -1,0 +1,22 @@
+appId: host.exp.exponent
+---
+- tapOn:
+    text: "Combining tables with INNER JOIN"
+- assertVisible:
+    text: "Combining tables with INNER JOIN"
+- tapOn:
+    text: "Ask anything about Combining tables with INNER JOIN"
+- inputText: "PHASE3A_ANDROID_KEYBOARD_SMOKE"
+- assertVisible:
+    text: "PHASE3A_ANDROID_KEYBOARD_SMOKE"
+- assertVisible:
+    text: "Send message"
+- hideKeyboard
+- assertVisible:
+    text: "Ask anything about Combining tables with INNER JOIN"
+- tapOn:
+    text: "Ask anything about Combining tables with INNER JOIN"
+- assertVisible:
+    text: "Send message"
+- eraseText: 100
+- hideKeyboard
