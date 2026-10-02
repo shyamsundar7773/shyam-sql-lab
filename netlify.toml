@@ -1,0 +1,8 @@
+[build]
+command = "npx expo export --platform web"
+publish = "dist"
+
+[[redirects]]
+from = "/:route"
+to = "/:route.html"
+status = 200
