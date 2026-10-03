@@ -1,11 +1,5 @@
-import { PlaceholderScreen } from '@/components/PlaceholderScreen';
+import { NotesLayout } from '@/components/notes/NotesLayout';
 
 export default function AddNotesScreen() {
-  return (
-    <PlaceholderScreen
-      title="Add Notes"
-      description="Create and organize your learning content here."
-      icon={{ ios: 'square.and.pencil', android: 'edit_note', web: 'edit_note' }}
-    />
-  );
+  return <NotesLayout initialTab="add" />;
 }

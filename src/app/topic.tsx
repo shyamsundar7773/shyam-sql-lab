@@ -27,7 +27,6 @@ import { getTopicContext } from '@/lib/learning-content';
 import { askTopicQuestion } from '@/lib/api';
 import { supabase } from '@/lib/supabase';
 import { createTopicLesson } from '@/lib/topic-lesson';
-import type { LearningMaterial } from '@/types/learning-content';
 import type {
   LearningChatMessage,
   LearningConversation,
@@ -40,7 +39,14 @@ type FeedItem =
 
 type RetryRequest = {
   question: string;
-  history: Array<{ role: 'user' | 'assistant'; content: string }>;
+  history: { role: 'user' | 'assistant'; content: string }[];
+};
+
+type LearningPathNoteContext = {
+  id: string;
+  title: string;
+  content: string;
+  source_type: string;
 };
 
 export default function TopicLearningChatScreen() {
@@ -82,6 +88,7 @@ function TopicConversation({
 }) {
   const { category, module, topic, previousTopic, nextTopic } = context;
   const { user, session } = useAuth();
+  const userId = user?.id;
   const { colors } = useAppTheme();
   const insets = useSafeAreaInsets();
   const shellContentScrollable = useAppShellContentScrollable();
@@ -90,6 +97,8 @@ function TopicConversation({
   const [conversation, setConversation] = useState<LearningConversation | null>(null);
   const [lesson, setLesson] = useState<TopicLesson>(localLesson);
   const [messages, setMessages] = useState<LearningChatMessage[]>([]);
+  const [learningNotes, setLearningNotes] = useState<LearningPathNoteContext[]>([]);
+  const [notesContextError, setNotesContextError] = useState('');
   const [draft, setDraft] = useState('');
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
@@ -112,9 +121,9 @@ function TopicConversation({
       setConversation(null);
       setMessages([]);
 
-      if (!user || !supabase) {
+      if (!userId || !supabase) {
         setLoadError(
-          user
+          userId
             ? 'Conversation storage is not configured. Check the Supabase client settings.'
             : 'Sign in to save and continue this learning conversation.',
         );
@@ -128,7 +137,7 @@ function TopicConversation({
           client
             .from('learning_conversations')
             .select('*')
-            .eq('user_id', user.id)
+            .eq('user_id', userId)
             .eq('category_id', category.id)
             .eq('module_id', module.id)
             .eq('topic_id', topic.id)
@@ -143,7 +152,7 @@ function TopicConversation({
           const created = await client
             .from('learning_conversations')
             .insert({
-              user_id: user.id,
+              user_id: userId,
               category_id: category.id,
               module_id: module.id,
               topic_id: topic.id,
@@ -208,8 +217,47 @@ function TopicConversation({
     localLesson,
     module.id,
     topic.id,
-    user?.id,
+    userId,
   ]);
+
+  useEffect(() => {
+    let active = true;
+    const loadLearningNotes = async () => {
+      if (!userId || !supabase) {
+        setLearningNotes([]);
+        return;
+      }
+      try {
+        const result = await supabase
+          .from('notes')
+          .select('id,title,content,source_type')
+          .eq('user_id', userId)
+          .eq('category_id', category.id)
+          .eq('module_id', module.id)
+          .eq('topic_id', topic.id)
+          .order('created_at', { ascending: true })
+          .limit(20);
+        if (result.error) {
+          throw result.error;
+        }
+        if (active) {
+          setLearningNotes((result.data ?? []) as LearningPathNoteContext[]);
+          setNotesContextError('');
+        }
+      } catch (error) {
+        if (active) {
+          setLearningNotes([]);
+          setNotesContextError(
+            getErrorMessage(error, 'Saved notes could not be loaded for this topic.'),
+          );
+        }
+      }
+    };
+    void Promise.resolve().then(loadLearningNotes);
+    return () => {
+      active = false;
+    };
+  }, [category.id, module.id, topic.id, userId]);
 
   const addAssistantReply = useCallback(
     async (request: RetryRequest, currentConversation: LearningConversation) => {
@@ -223,7 +271,14 @@ function TopicConversation({
         category: category.title,
         module: module.title,
         topic: topic.title,
-        officialContent: JSON.stringify(lesson),
+        officialContent: JSON.stringify({
+          officialLesson: lesson,
+          savedLearningNotes: learningNotes.slice(-3).map((note) => ({
+            title: note.title,
+            source: note.source_type,
+            content: note.content.slice(0, 1_200),
+          })),
+        }),
         history: request.history,
         question: request.question,
       });
@@ -246,7 +301,7 @@ function TopicConversation({
       setRetryRequest(null);
       setSendError('');
     },
-    [category.title, lesson, module.title, session?.access_token, topic.title],
+    [category.title, learningNotes, lesson, module.title, session?.access_token, topic.title],
   );
 
   const submitQuestion = useCallback(async () => {
@@ -416,6 +471,15 @@ function TopicConversation({
             showsVerticalScrollIndicator
             ListFooterComponent={
               <View style={stylesForTheme.feedFooter}>
+                {notesContextError ? (
+                  <Text accessibilityRole="alert" style={stylesForTheme.errorText}>
+                    {notesContextError}
+                  </Text>
+                ) : learningNotes.length > 0 ? (
+                  <Text style={stylesForTheme.stateText}>
+                    {learningNotes.length} saved Learning Path note{learningNotes.length === 1 ? '' : 's'} available to the tutor.
+                  </Text>
+                ) : null}
                 {loading ? (
                   <View style={stylesForTheme.thinking}>
                     <ActivityIndicator color={colors.primary} size="small" />

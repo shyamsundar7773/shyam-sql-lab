@@ -1,4 +1,4 @@
-import { createContext, useContext, useState } from 'react';
+import { createContext, useCallback, useContext, useRef, useState } from 'react';
 import { SymbolView } from 'expo-symbols';
 import type { ReactNode } from 'react';
 import {
@@ -10,6 +10,7 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
+import { ChevronUp } from 'lucide-react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { MobileNavigation } from '@/components/app-shell/MobileNavigation';
@@ -26,9 +27,18 @@ type AppShellProps = {
 };
 
 const AppShellContentScrollableContext = createContext(false);
+const AppShellScrollToTopControlContext = createContext<((visible: boolean) => void) | null>(null);
 
 export function useAppShellContentScrollable() {
   return useContext(AppShellContentScrollableContext);
+}
+
+export function useAppShellScrollToTopControl() {
+  const setVisible = useContext(AppShellScrollToTopControlContext);
+  if (!setVisible) {
+    throw new Error('useAppShellScrollToTopControl must be used inside AppShell.');
+  }
+  return setVisible;
 }
 
 export function AppShell({
@@ -41,36 +51,47 @@ export function AppShell({
   const { colors } = useAppTheme();
   const isDesktop = width >= DesignTokens.layout.desktopBreakpoint;
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
+  const [scrollToTopVisible, setScrollToTopVisible] = useState(false);
+  const contentScrollRef = useRef<ScrollView>(null);
+  const scrollToTop = useCallback(() => {
+    contentScrollRef.current?.scrollTo({ y: 0, animated: true });
+  }, []);
+
   if (mode === 'loading' || mode === 'redirecting') {
     return (
-      <AppShellContentScrollableContext.Provider value={false}>
-        <View style={[styles.loadingScreen, { backgroundColor: colors.background }]}>
-          <View style={styles.hiddenRoute}>{children}</View>
-          <ActivityIndicator
-            accessibilityLabel={mode === 'loading' ? 'Restoring session' : 'Redirecting'}
-            color={colors.primary}
-          />
-        </View>
-      </AppShellContentScrollableContext.Provider>
+      <AppShellScrollToTopControlContext.Provider value={setScrollToTopVisible}>
+        <AppShellContentScrollableContext.Provider value={false}>
+          <View style={[styles.loadingScreen, { backgroundColor: colors.background }]}>
+            <View style={styles.hiddenRoute}>{children}</View>
+            <ActivityIndicator
+              accessibilityLabel={mode === 'loading' ? 'Restoring session' : 'Redirecting'}
+              color={colors.primary}
+            />
+          </View>
+        </AppShellContentScrollableContext.Provider>
+      </AppShellScrollToTopControlContext.Provider>
     );
   }
 
   if (mode === 'auth') {
     return (
-      <AppShellContentScrollableContext.Provider value={false}>
-        {children}
-      </AppShellContentScrollableContext.Provider>
+      <AppShellScrollToTopControlContext.Provider value={setScrollToTopVisible}>
+        <AppShellContentScrollableContext.Provider value={false}>
+          {children}
+        </AppShellContentScrollableContext.Provider>
+      </AppShellScrollToTopControlContext.Provider>
     );
   }
 
   return (
-    <AppShellContentScrollableContext.Provider value={contentScrollable}>
-      <SafeAreaView
-        edges={['top', 'left', 'right']}
-        style={[styles.safeArea, { backgroundColor: colors.background }]}>
-        <View style={[styles.app, { backgroundColor: colors.background }]}>
-          {isDesktop ? <Sidebar /> : null}
-          <View style={[styles.main, { backgroundColor: colors.background }]}>
+    <AppShellScrollToTopControlContext.Provider value={setScrollToTopVisible}>
+      <AppShellContentScrollableContext.Provider value={contentScrollable}>
+        <SafeAreaView
+          edges={['top', 'left', 'right']}
+          style={[styles.safeArea, { backgroundColor: colors.background }]}>
+          <View style={[styles.app, { backgroundColor: colors.background }]}>
+            {isDesktop ? <Sidebar /> : null}
+            <View style={[styles.main, { backgroundColor: colors.background }]}>
             {!isDesktop && !immersive ? (
               <View
                 style={[
@@ -110,6 +131,7 @@ export function AppShell({
             ) : null}
             {contentScrollable && !immersive ? (
               <ScrollView
+                ref={contentScrollRef}
                 style={[styles.contentScroll, { backgroundColor: colors.background }]}
                 contentContainerStyle={[styles.content, !isDesktop && styles.mobileContent]}
                 keyboardShouldPersistTaps="handled"
@@ -131,16 +153,30 @@ export function AppShell({
                 <View style={immersive ? styles.immersivePage : styles.page}>{children}</View>
               </View>
             )}
+              {scrollToTopVisible && contentScrollable && !immersive ? (
+                <Pressable
+                  accessibilityLabel="Scroll to top"
+                  accessibilityRole="button"
+                  onPress={scrollToTop}
+                  style={({ pressed }) => [
+                    styles.scrollToTopButton,
+                    { backgroundColor: colors.primary, borderColor: colors.surface },
+                    pressed && styles.pressed,
+                  ]}>
+                  <ChevronUp color={colors.white} size={22} strokeWidth={2.8} />
+                </Pressable>
+              ) : null}
+            </View>
           </View>
-        </View>
-        {!immersive ? (
-          <MobileNavigation
-            visible={mobileNavigationOpen}
-            onClose={() => setMobileNavigationOpen(false)}
-          />
-        ) : null}
-      </SafeAreaView>
-    </AppShellContentScrollableContext.Provider>
+          {!immersive ? (
+            <MobileNavigation
+              visible={mobileNavigationOpen}
+              onClose={() => setMobileNavigationOpen(false)}
+            />
+          ) : null}
+        </SafeAreaView>
+      </AppShellContentScrollableContext.Provider>
+    </AppShellScrollToTopControlContext.Provider>
   );
 }
 
@@ -163,6 +199,7 @@ const styles = StyleSheet.create({
   main: {
     flex: 1,
     minWidth: 0,
+    position: 'relative',
   },
   mobileHeader: {
     height: 64,
@@ -181,6 +218,19 @@ const styles = StyleSheet.create({
   },
   pressed: {
     opacity: 0.65,
+  },
+  scrollToTopButton: {
+    position: 'absolute',
+    right: 20,
+    bottom: 20,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    borderWidth: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+    elevation: 8,
+    zIndex: 20,
   },
   mobileBrand: {
     flex: 1,

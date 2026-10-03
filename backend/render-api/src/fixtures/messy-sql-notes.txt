@@ -1,0 +1,47 @@
+SQL FUNDAMENTALS / query basics
+
+select is how I choose columns. Prefer explicit names rather than SELECT *.
+  - FROM gives the source table
+  - Example: SELECT id, name FROM customers;
+
+WHERE + ORDER BY
+
+Filter rows before grouping:
+1. WHERE status = 'active'
+2. ORDER BY created_at DESC
+
+joins: INNER JOIN
+
+An INNER JOIN keeps records where the key exists in both tables.
+```sql
+SELECT c.name, o.id
+FROM customers c
+JOIN orders o ON o.customer_id = c.id;
+```
+
+JOINS / left join
+
+LEFT JOIN keeps every row from the left table, matching data from the right when available.
+
+Group By + aggregate functions
+
+GROUP BY creates groups and COUNT, SUM, AVG return aggregate values.
+SELECT region, COUNT(*) FROM sales GROUP BY region;
+
+Null things (not sure where this fits)
+
+NULL comparisons aren't true or false like normal values; use IS NULL / IS NOT NULL.
+
+SUBQUERIES?
+
+A query can appear inside another query. I think this is advanced SQL but no path label is in my notes.
+
+Interview: WHERE vs HAVING — WHERE filters rows before aggregation; HAVING filters groups.
+
+Vector database tangent: HNSW indexes, embedding dimensions, ef_search tuning.
+
+select is how I choose columns. Prefer explicit names rather than SELECT *.
+
+### random copied line
+
+JOIN was confusing in that old project. JOIN was confusing in that old project.

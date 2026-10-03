@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ChevronLeft } from 'lucide-react-native';
 
 import { MarkdownContent } from '@/components/topic-chat/MarkdownContent';
-import { Badge, Button, Card, SectionHeader } from '@/components/ui/primitives';
+import { Badge, Card, SectionHeader } from '@/components/ui/primitives';
 import { DesignTokens } from '@/constants/theme';
 import { useAuth } from '@/contexts/auth-context';
 import { useAppTheme } from '@/contexts/theme-context';
@@ -79,7 +80,7 @@ export function SqlPracticedNotes() {
           .from('practice_sets')
           .select('id,config,set_number,title,bookmarked,created_at,updated_at')
           .eq('user_id', user.id)
-          .order('updated_at', { ascending: false });
+          .order('created_at', { ascending: true });
         if (setsResult.error) {
           throw setsResult.error;
         }
@@ -195,9 +196,7 @@ export function SqlPracticedNotes() {
     const topic = findTopic(selectedSet.config.topicId);
     return (
       <View style={styles.screen}>
-        <Button variant="secondary" onPress={() => setSelectedQuestionId(null)}>
-          Back to questions
-        </Button>
+        <DrilldownBackButton label="Back to questions" onPress={() => setSelectedQuestionId(null)} />
         <SectionHeader
           title={`Question ${selectedQuestion.position + 1}`}
           subtitle={`${category} · ${topic} · Set ${selectedSet.set_number}`}
@@ -261,9 +260,10 @@ export function SqlPracticedNotes() {
     const topic = findTopic(selectedSet.config.topicId);
     return (
       <View style={styles.screen}>
-        <Button variant="secondary" onPress={() => setSelectedSetId(null)}>
-          Back to practiced sets
-        </Button>
+        <DrilldownBackButton
+          label="Back to practiced sets"
+          onPress={() => setSelectedSetId(null)}
+        />
         <SectionHeader
           title={`${category} · ${topic}`}
           subtitle={`Practice Set ${selectedSet.set_number} · ${selectedSet.config.difficulty}`}
@@ -371,6 +371,24 @@ export function SqlPracticedNotes() {
   );
 }
 
+function DrilldownBackButton({ label, onPress }: { label: string; onPress: () => void }) {
+  const { colors } = useAppTheme();
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.drilldownBackButton,
+        { backgroundColor: colors.surface, borderColor: colors.border },
+        pressed && styles.pressed,
+      ]}>
+      <ChevronLeft color={colors.primary} size={18} strokeWidth={2.5} />
+      <Text style={[styles.drilldownBackText, { color: colors.primaryText }]}>{label}</Text>
+    </Pressable>
+  );
+}
+
 function FilterField({
   label,
   value,
@@ -386,7 +404,7 @@ function FilterField({
   const [open, setOpen] = useState(false);
   const selectedOption = options.find((option) => option.value === value);
   return (
-    <View style={styles.filterField}>
+    <View style={[styles.filterField, open && styles.filterFieldOpen]}>
       <Text style={[styles.filterLabel, { color: colors.primaryText }]}>{label}</Text>
       <Pressable
         accessibilityRole="button"
@@ -399,22 +417,42 @@ function FilterField({
         <Text style={{ color: colors.secondaryText }}>{open ? '−' : '+'}</Text>
       </Pressable>
       {open ? (
-        <View style={[styles.filterOptions, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+        <View
+          style={[
+            styles.filterOptions,
+            { backgroundColor: colors.surface, borderColor: colors.border },
+          ]}>
           <ScrollView nestedScrollEnabled style={styles.optionScroll}>
-            {options.map((option) => (
-              <Pressable
-                key={option.value}
-                accessibilityRole="button"
-                onPress={() => {
-                  onChange(option.value);
-                  setOpen(false);
-                }}
-                style={styles.option}>
-                <Text style={[styles.optionText, { color: colors.primaryText }]}>
-                  {option.label}
-                </Text>
-              </Pressable>
-            ))}
+            {options.map((option) => {
+              const selected = option.value === value;
+              return (
+                <Pressable
+                  key={option.value}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected }}
+                  onPress={() => {
+                    onChange(option.value);
+                    setOpen(false);
+                  }}
+                  style={({ pressed }) => [
+                    styles.option,
+                    { backgroundColor: selected || pressed ? colors.primarySoft : colors.surface },
+                  ]}>
+                  <Text
+                    style={[
+                      styles.optionText,
+                      { color: selected ? colors.primary : colors.primaryText },
+                    ]}>
+                    {option.label}
+                  </Text>
+                  {selected ? (
+                    <Text accessibilityElementsHidden style={{ color: colors.primary, fontWeight: '800' }}>
+                      ✓
+                    </Text>
+                  ) : null}
+                </Pressable>
+              );
+            })}
           </ScrollView>
         </View>
       ) : null}
@@ -518,6 +556,21 @@ const styles = StyleSheet.create({
     minWidth: 0,
     gap: 16,
   },
+  drilldownBackButton: {
+    alignSelf: 'flex-start',
+    minHeight: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderWidth: 1,
+    borderRadius: DesignTokens.radius.pill,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  drilldownBackText: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
   filters: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -528,6 +581,10 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 145,
     gap: 6,
+  },
+  filterFieldOpen: {
+    zIndex: 10,
+    elevation: 8,
   },
   filterLabel: {
     fontSize: 12,
@@ -553,13 +610,17 @@ const styles = StyleSheet.create({
     borderRadius: DesignTokens.radius.small,
     maxHeight: 210,
     overflow: 'hidden',
+    ...DesignTokens.elevation.card,
   },
   optionScroll: {
     maxHeight: 210,
   },
   option: {
     minHeight: 42,
-    justifyContent: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
     paddingHorizontal: 12,
   },
   optionText: {
