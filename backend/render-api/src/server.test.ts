@@ -251,6 +251,12 @@ test("authenticated SQL practice routes generate, execute, and evaluate without 
       method: "POST",
       headers: { ...authorization, "Content-Type": "application/json" },
       body: JSON.stringify({
+        context: {
+          category: "SQL Foundations",
+          module: "Query Basics",
+          topic: "WHERE",
+          subtopic: "Filtering rows",
+        },
         question,
         sql: "SELECT name FROM customers WHERE status = 'active'",
         result: { ok: true, columns: ["name"], rows: [{ name: "Mina" }] },
@@ -266,6 +272,10 @@ test("authenticated SQL practice routes generate, execute, and evaluate without 
 
     assert.equal(providerRequests.length, 2);
     assert.match(providerRequests[1].messages[0].content, /Return the active customer names/);
+    assert.match(providerRequests[1].messages[0].content, /Category: SQL Foundations/);
+    assert.match(providerRequests[1].messages[0].content, /Module: Query Basics/);
+    assert.match(providerRequests[1].messages[0].content, /Topic: WHERE/);
+    assert.match(providerRequests[1].messages[0].content, /Subtopic: Filtering rows/);
     assert.match(providerRequests[1].messages[0].content, /Expected correct SQL answer: SELECT name FROM customers WHERE status = 'active'/);
     assert.match(providerRequests[1].messages[0].content, /SELECT name FROM customers/);
     assert.match(providerRequests[1].messages[0].content, /"name":"Mina"/);

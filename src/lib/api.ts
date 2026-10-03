@@ -48,6 +48,13 @@ export type PracticeChatMessage = {
   content: string;
 };
 
+export type PracticeLearningContext = {
+  category: string;
+  module: string;
+  topic: string;
+  subtopic: string;
+};
+
 async function requestPracticeApi<T>(
   endpoint: string,
   accessToken: string,
@@ -121,6 +128,7 @@ export async function runPracticeSql(
 
 export async function askPracticeEvaluator(options: {
   accessToken: string;
+  context: PracticeLearningContext;
   question: PracticeQuestionContent;
   sql: string;
   result: SqlPracticeExecutionResult | null;
@@ -131,6 +139,7 @@ export async function askPracticeEvaluator(options: {
     '/api/practice/evaluate',
     options.accessToken,
     {
+      context: options.context,
       question: options.question,
       sql: options.sql,
       result: options.result,

@@ -3,6 +3,7 @@ import { test } from 'node:test';
 
 import {
   filterPracticedSets,
+  getPracticeLearningContext,
   getPracticeQuestionReview,
   getQuestionIndex,
   updatePracticeQuestionDraft,
@@ -25,6 +26,23 @@ test('practiced-note filters support all, category, topic, and combined filters'
     'other-joins',
   ]);
   assert.deepEqual(filterPracticedSets(sets, 'sql', 'joins').map((set) => set.id), ['join-one']);
+});
+
+test('practice evaluator context resolves saved path IDs to their learning labels', () => {
+  assert.deepEqual(
+    getPracticeLearningContext({
+      categoryId: 'sql-foundations',
+      moduleId: 'query-basics',
+      topicId: 'query-structure',
+      subtopicId: 'select-list',
+    }),
+    {
+      category: 'SQL Foundations',
+      module: 'Query Basics',
+      topic: 'The shape of a SQL query',
+      subtopic: 'Choosing columns',
+    },
+  );
 });
 
 test('question navigation clamps at both ends and supports empty question lists', () => {

@@ -25,7 +25,11 @@ import {
   runPracticeSql,
   type PracticeChatMessage,
 } from '@/lib/api';
-import { getQuestionIndex, updatePracticeQuestionDraft } from '@/lib/sql-practice-notes';
+import {
+  getPracticeLearningContext,
+  getQuestionIndex,
+  updatePracticeQuestionDraft,
+} from '@/lib/sql-practice-notes';
 import { supabase } from '@/lib/supabase';
 import type {
   PracticeConversationMessage,
@@ -139,6 +143,7 @@ export default function SqlPracticeScreen() {
 
   const activeSet = sets.find((set) => set.id === activeSetId) ?? null;
   const currentQuestion = activeSet?.questions[activeSet.current_question_index] ?? null;
+  const attemptQuestionId = currentQuestion?.id;
 
   const loadPracticeSets = useCallback(async () => {
     if (!user || !supabase) {
@@ -204,6 +209,8 @@ export default function SqlPracticeScreen() {
   }, [user]);
 
   useEffect(() => {
+    // The request synchronizes the saved practice sets and loading indicator.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadPracticeSets();
   }, [loadPracticeSets]);
 
@@ -237,11 +244,13 @@ export default function SqlPracticeScreen() {
   }, [activeSet, currentQuestion, user]);
 
   useEffect(() => {
-    if (!currentQuestion || !supabase) {
+    if (!attemptQuestionId || !supabase) {
+      // Avoid showing attempt history from the previous question.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setAttempts([]);
       return;
     }
-    const questionId = currentQuestion.id;
+    const questionId = attemptQuestionId;
     let active = true;
     setAttempts([]);
     void supabase
@@ -263,7 +272,7 @@ export default function SqlPracticeScreen() {
     return () => {
       active = false;
     };
-  }, [currentQuestion?.id]);
+  }, [attemptQuestionId]);
 
   useEffect(
     () => () => {
@@ -507,6 +516,7 @@ export default function SqlPracticeScreen() {
     if (
       sendLock.current ||
       !currentQuestion ||
+      !activeSet ||
       !session?.access_token ||
       !supabase ||
       !message.trim()
@@ -533,6 +543,7 @@ export default function SqlPracticeScreen() {
       setMessageDraft('');
       const reply = await askPracticeEvaluator({
         accessToken: session.access_token,
+        context: getPracticeLearningContext(activeSet.config),
         question: currentQuestion.content,
         sql: currentQuestion.draft_sql,
         result: currentQuestion.latest_result,
@@ -1339,7 +1350,7 @@ function SelectField({
 }: {
   label: string;
   value: string;
-  options: Array<{ label: string; value: string }>;
+  options: { label: string; value: string }[];
   onChange: (value: string) => void;
 }) {
   const { styles, colors } = usePracticeStyles();
@@ -1669,5 +1680,17 @@ function statusTone(status: SqlPracticeStatus | SetFilter): 'blue' | 'green' | '
 }
 
 function getErrorMessage(error: unknown, fallback: string) {
-  return error instanceof Error && error.message ? error.message : fallback;
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'message' in error &&
+    typeof error.message === 'string' &&
+    error.message
+  ) {
+    return error.message;
+  }
+  return fallback;
 }

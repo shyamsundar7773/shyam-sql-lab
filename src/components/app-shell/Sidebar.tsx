@@ -1,5 +1,5 @@
 import { SymbolView } from 'expo-symbols';
-import { StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { NavigationLink } from '@/components/app-shell/NavigationLink';
 import { ThemeToggle } from '@/components/app-shell/ThemeToggle';
@@ -9,14 +9,15 @@ import { useAppTheme } from '@/contexts/theme-context';
 
 type SidebarProps = {
   onNavigate?: () => void;
+  mobile?: boolean;
 };
 
-export function Sidebar({ onNavigate }: SidebarProps) {
+export function Sidebar({ onNavigate, mobile = false }: SidebarProps) {
   const { colors } = useAppTheme();
 
   return (
-    <View style={[styles.sidebar, { backgroundColor: colors.sidebarBackground }]}>
-      <View style={styles.brand}>
+    <View style={[styles.sidebar, mobile && styles.mobileSidebar, { backgroundColor: colors.sidebarBackground }]}>
+      <View style={[styles.brand, mobile && styles.mobileBrand]}>
         <View style={[styles.brandMark, { backgroundColor: colors.primary }]}>
           <SymbolView
             name={{ ios: 'externaldrive.fill', android: 'database', web: 'database' }}
@@ -25,33 +26,28 @@ export function Sidebar({ onNavigate }: SidebarProps) {
           />
         </View>
         <View style={styles.brandCopy}>
-          <Text style={[styles.brandName, { color: colors.white }]}>Shyam SQL Lab</Text>
-          <Text style={[styles.brandTagline, { color: colors.sidebarText }]}>Learn · Practice · Grow</Text>
+          <Text style={[styles.brandName, mobile && styles.mobileBrandName, { color: colors.white }]}>
+            Shyam SQL Lab
+          </Text>
+          <Text style={[styles.brandTagline, mobile && styles.mobileBrandTagline, { color: colors.sidebarText }]}>
+            Learn · Practice · Grow
+          </Text>
         </View>
       </View>
 
-      <View style={styles.navSection}>
-        <Text style={[styles.navCaption, { color: colors.sidebarCaption }]}>LEARNING SPACE</Text>
-        <View style={styles.navList}>
-          {navigationItems.slice(0, 5).map((item) => (
-            <NavigationLink key={item.href} item={item} onNavigate={onNavigate} />
-          ))}
-        </View>
-      </View>
-
-      <View style={styles.navSection}>
-        <Text style={[styles.navCaption, { color: colors.sidebarCaption }]}>YOUR WORKSPACE</Text>
-        <View style={styles.navList}>
-          {navigationItems.slice(5).map((item) => (
-            <NavigationLink key={item.href} item={item} onNavigate={onNavigate} />
-          ))}
-        </View>
-      </View>
-
-      <View style={styles.themeControl}>
-        <ThemeToggle />
-      </View>
-      <View style={styles.sidebarSpacer} />
+      {mobile ? (
+        <ScrollView
+          contentContainerStyle={styles.mobileNavigationContent}
+          showsVerticalScrollIndicator={false}
+          style={styles.mobileNavigationScroll}>
+          <SidebarLinks mobile onNavigate={onNavigate} />
+        </ScrollView>
+      ) : (
+        <>
+          <SidebarLinks onNavigate={onNavigate} />
+          <View style={styles.sidebarSpacer} />
+        </>
+      )}
       <View style={[styles.sidebarFooter, { borderTopColor: colors.sidebarActive }]}>
         <View style={[styles.avatar, { backgroundColor: colors.accentSoft }]}>
           <Text style={[styles.avatarInitials, { color: colors.sidebarBackground }]}>S</Text>
@@ -70,6 +66,45 @@ export function Sidebar({ onNavigate }: SidebarProps) {
   );
 }
 
+function SidebarLinks({
+  onNavigate,
+  mobile = false,
+}: {
+  onNavigate?: () => void;
+  mobile?: boolean;
+}) {
+  const { colors } = useAppTheme();
+  return (
+    <>
+      <View style={[styles.navSection, mobile && styles.mobileNavSection]}>
+        <Text style={[styles.navCaption, mobile && styles.mobileNavCaption, { color: colors.sidebarCaption }]}>
+          LEARNING SPACE
+        </Text>
+        <View style={[styles.navList, mobile && styles.mobileNavList]}>
+          {navigationItems.slice(0, 5).map((item) => (
+            <NavigationLink key={item.href} item={item} mobile={mobile} onNavigate={onNavigate} />
+          ))}
+        </View>
+      </View>
+
+      <View style={[styles.navSection, mobile && styles.mobileNavSection]}>
+        <Text style={[styles.navCaption, mobile && styles.mobileNavCaption, { color: colors.sidebarCaption }]}>
+          YOUR WORKSPACE
+        </Text>
+        <View style={[styles.navList, mobile && styles.mobileNavList]}>
+          {navigationItems.slice(5).map((item) => (
+            <NavigationLink key={item.href} item={item} mobile={mobile} onNavigate={onNavigate} />
+          ))}
+        </View>
+      </View>
+
+      <View style={[styles.themeControl, mobile && styles.mobileThemeControl]}>
+        <ThemeToggle />
+      </View>
+    </>
+  );
+}
+
 const styles = StyleSheet.create({
   sidebar: {
     width: DesignTokens.layout.sidebarWidth,
@@ -78,12 +113,23 @@ const styles = StyleSheet.create({
     paddingTop: 26,
     paddingBottom: 16,
   },
+  mobileSidebar: {
+    width: '100%',
+    flex: 1,
+    paddingHorizontal: 16,
+    paddingTop: 18,
+    paddingBottom: 12,
+  },
   brand: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
     paddingHorizontal: 4,
     paddingBottom: 30,
+  },
+  mobileBrand: {
+    paddingHorizontal: 0,
+    paddingBottom: 20,
   },
   brandMark: {
     width: 42,
@@ -105,12 +151,25 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '600',
   },
+  mobileBrandName: {
+    fontSize: 18,
+  },
+  mobileBrandTagline: {
+    fontSize: 12,
+  },
   navSection: {
     marginBottom: 24,
+  },
+  mobileNavSection: {
+    marginBottom: 18,
   },
   themeControl: {
     marginTop: 2,
     paddingHorizontal: 4,
+  },
+  mobileThemeControl: {
+    marginTop: 4,
+    paddingHorizontal: 0,
   },
   navCaption: {
     fontSize: 9,
@@ -119,8 +178,23 @@ const styles = StyleSheet.create({
     marginHorizontal: 14,
     marginBottom: 10,
   },
+  mobileNavCaption: {
+    fontSize: 11,
+    marginHorizontal: 10,
+    marginBottom: 8,
+  },
   navList: {
     gap: 4,
+  },
+  mobileNavList: {
+    gap: 7,
+  },
+  mobileNavigationScroll: {
+    flex: 1,
+    minHeight: 0,
+  },
+  mobileNavigationContent: {
+    paddingBottom: 12,
   },
   sidebarSpacer: {
     flex: 1,

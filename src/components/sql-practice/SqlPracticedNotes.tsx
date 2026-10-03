@@ -135,11 +135,7 @@ export function SqlPracticedNotes() {
         });
       } catch (loadError) {
         if (active) {
-          setError(
-            loadError instanceof Error
-              ? loadError.message
-              : 'SQL Practiced Notes could not be loaded.',
-          );
+          setError(getErrorMessage(loadError, 'SQL Practiced Notes could not be loaded.'));
         }
       } finally {
         if (active) {
@@ -458,6 +454,22 @@ function findTopic(id: string) {
     }
   }
   return id;
+}
+
+function getErrorMessage(error: unknown, fallback: string) {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'message' in error &&
+    typeof error.message === 'string' &&
+    error.message
+  ) {
+    return error.message;
+  }
+  return fallback;
 }
 
 function getSetStatus(set: PracticeSet) {

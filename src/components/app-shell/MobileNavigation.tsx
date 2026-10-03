@@ -2,7 +2,6 @@ import { Modal, Platform, Pressable, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Sidebar } from '@/components/app-shell/Sidebar';
-import { DesignTokens } from '@/constants/theme';
 import { useAppTheme } from '@/contexts/theme-context';
 
 type MobileNavigationProps = {
@@ -28,7 +27,7 @@ export function MobileNavigation({ visible, onClose }: MobileNavigationProps) {
           style={styles.backdrop}
         />
         <View style={[styles.menu, { backgroundColor: colors.sidebarBackground }]}>
-          <Sidebar onNavigate={onClose} />
+          <Sidebar mobile onNavigate={onClose} />
         </View>
       </SafeAreaView>
     </Modal>
@@ -45,8 +44,8 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(9, 20, 39, 0.52)',
   },
   menu: {
-    width: '84%',
-    maxWidth: 320,
+    width: '88%',
+    maxWidth: 360,
     height: '100%',
 
     ...Platform.select({

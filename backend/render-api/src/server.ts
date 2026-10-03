@@ -235,6 +235,10 @@ app.post("/api/practice/evaluate", async (request, response) => {
           "Evaluate the user's approach against the exact question. Explain what is correct, what needs improvement, and why.",
           "Use the SQL output only as execution evidence; do not claim to execute queries yourself.",
           "Answer follow-up doubts, show alternate SQL approaches, and give examples when asked.",
+          `Category: ${input.context.category}`,
+          `Module: ${input.context.module}`,
+          `Topic: ${input.context.topic}`,
+          `Subtopic: ${input.context.subtopic}`,
           `Exact practice question: ${input.question.prompt}`,
           `Question context: ${input.question.explanation}`,
           `Expected correct SQL answer: ${input.question.solutionSql ?? "(not stored for this older question)"}`,
@@ -297,6 +301,12 @@ type PracticeGenerationRequest = {
 };
 
 type PracticeEvaluationRequest = {
+  context: {
+    category: string;
+    module: string;
+    topic: string;
+    subtopic: string;
+  };
   question: GeneratedQuestion;
   sql: string;
   result: unknown;
@@ -347,7 +357,13 @@ function parsePracticeEvaluationRequest(value: unknown): PracticeEvaluationReque
   if (!isRecord(value) || !validateGeneratedQuestions([value.question], 1)) {
     return null;
   }
+  const context = value.context;
   if (
+    !isRecord(context) ||
+    !isNonEmptyString(context.category, 160) ||
+    !isNonEmptyString(context.module, 160) ||
+    !isNonEmptyString(context.topic, 160) ||
+    !isNonEmptyString(context.subtopic, 160) ||
     typeof value.sql !== "string" ||
     value.sql.length > 10_000 ||
     !isNonEmptyString(value.message, maximumHistoryMessageLength) ||
@@ -363,6 +379,12 @@ function parsePracticeEvaluationRequest(value: unknown): PracticeEvaluationReque
     return null;
   }
   return {
+    context: {
+      category: context.category.trim(),
+      module: context.module.trim(),
+      topic: context.topic.trim(),
+      subtopic: context.subtopic.trim(),
+    },
     question: value.question as GeneratedQuestion,
     sql: value.sql,
     result: value.result,

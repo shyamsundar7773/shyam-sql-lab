@@ -18,7 +18,12 @@ import { MarkdownContent } from '@/components/topic-chat/MarkdownContent';
 import { DesignTokens } from '@/constants/theme';
 import { useAuth } from '@/contexts/auth-context';
 import { useAppTheme } from '@/contexts/theme-context';
-import { askPracticeEvaluator, type PracticeChatMessage } from '@/lib/api';
+import {
+  askPracticeEvaluator,
+  type PracticeChatMessage,
+  type PracticeLearningContext,
+} from '@/lib/api';
+import { getPracticeLearningContext, type PracticePathIds } from '@/lib/sql-practice-notes';
 import { supabase } from '@/lib/supabase';
 import type {
   PracticeConversationMessage,
@@ -33,6 +38,7 @@ type PracticeSetHeader = {
   id: string;
   set_number: number;
   current_question_index: number;
+  config: PracticePathIds;
 };
 
 export default function PracticeEvaluatorScreen() {
@@ -56,6 +62,7 @@ export default function PracticeEvaluatorScreen() {
   const latestMessagesRef = useRef<PracticeConversationMessage[]>([]);
   const sendLock = useRef(false);
   const isAtLatestMessage = useRef(true);
+  const learningContext = set ? getPracticeLearningContext(set.config) : null;
 
   const scrollToLatestMessage = useCallback(() => {
     isAtLatestMessage.current = true;
@@ -72,6 +79,7 @@ export default function PracticeEvaluatorScreen() {
     async (
       message: string,
       currentQuestion: PracticeQuestionRecord,
+      context: PracticeLearningContext,
       history = latestMessagesRef.current,
     ) => {
       if (
@@ -101,6 +109,7 @@ export default function PracticeEvaluatorScreen() {
 
         const reply = await askPracticeEvaluator({
           accessToken: session.access_token,
+          context,
           question: currentQuestion.content,
           sql: currentQuestion.draft_sql,
           result: currentQuestion.latest_result as SqlPracticeExecutionResult | null,
@@ -109,6 +118,7 @@ export default function PracticeEvaluatorScreen() {
             .map(({ role, content }): PracticeChatMessage => ({ role, content })),
           message: message.trim(),
         });
+
         const assistantResult = await supabase
           .from('practice_evaluator_messages')
           .insert({ question_id: currentQuestion.id, role: 'assistant', content: reply })
@@ -120,9 +130,10 @@ export default function PracticeEvaluatorScreen() {
         updateMessages([...withUserMessage, assistantResult.data as PracticeConversationMessage]);
       } catch (sendError) {
         setError(
-          sendError instanceof Error
-            ? sendError.message
-            : 'The evaluator could not respond. Your question is saved; retry or ask again.',
+          getErrorMessage(
+            sendError,
+            'The evaluator could not respond. Your question is saved; retry or ask again.',
+          ),
         );
       } finally {
         sendLock.current = false;
@@ -147,7 +158,7 @@ export default function PracticeEvaluatorScreen() {
           supabase.from('practice_questions').select('*').eq('id', questionId).eq('set_id', setId).single(),
           supabase
             .from('practice_sets')
-            .select('id,set_number,current_question_index')
+            .select('id,set_number,current_question_index,config')
             .eq('id', setId)
             .single(),
           supabase
@@ -176,15 +187,16 @@ export default function PracticeEvaluatorScreen() {
         setSet(loadedSet);
         updateMessages(loadedMessages);
         if (loadedMessages.length === 0) {
-          await sendMessage(firstPrompt, loadedQuestion, []);
+          await sendMessage(
+            firstPrompt,
+            loadedQuestion,
+            getPracticeLearningContext(loadedSet.config),
+            [],
+          );
         }
       } catch (loadError) {
         if (active) {
-          setError(
-            loadError instanceof Error
-              ? loadError.message
-              : 'The evaluator conversation could not be loaded.',
-          );
+          setError(getErrorMessage(loadError, 'The evaluator conversation could not be loaded.'));
         }
       } finally {
         if (active) {
@@ -224,7 +236,7 @@ export default function PracticeEvaluatorScreen() {
           <Text style={[styles.title, { color: colors.primaryText }]}>AI Evaluator</Text>
           <Text style={[styles.subtitle, { color: colors.secondaryText }]} numberOfLines={1}>
             {set && question
-              ? `Set ${set.set_number} · Question ${question.position + 1}`
+              ? `${learningContext?.topic} · Set ${set.set_number} · Question ${question.position + 1}`
               : 'Your SQL learning conversation'}
           </Text>
         </View>
@@ -332,8 +344,8 @@ export default function PracticeEvaluatorScreen() {
             accessibilityRole="button"
             disabled={sending || loading || !messageDraft.trim()}
             onPress={() => {
-              if (question) {
-                void sendMessage(messageDraft, question);
+              if (question && learningContext) {
+                void sendMessage(messageDraft, question, learningContext);
               }
             }}
             style={({ pressed }) => [
@@ -487,3 +499,19 @@ const styles = StyleSheet.create({
     opacity: 0.8,
   },
 });
+
+function getErrorMessage(error: unknown, fallback: string) {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'message' in error &&
+    typeof error.message === 'string' &&
+    error.message
+  ) {
+    return error.message;
+  }
+  return fallback;
+}

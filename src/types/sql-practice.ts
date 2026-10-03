@@ -4,8 +4,8 @@ export type SqlPracticeStatus = 'in_progress' | 'completed' | 'needs_review';
 
 export type PracticeTable = {
   name: string;
-  columns: Array<{ name: string; type: 'TEXT' | 'INTEGER' | 'REAL' | 'BOOLEAN' }>;
-  rows: Array<Record<string, string | number | boolean | null>>;
+  columns: { name: string; type: 'TEXT' | 'INTEGER' | 'REAL' | 'BOOLEAN' }[];
+  rows: Record<string, string | number | boolean | null>[];
 };
 
 export type PracticeQuestionContent = {
@@ -31,7 +31,7 @@ export type PracticeQuestionRecord = {
 export type SqlPracticeExecutionResult = {
   ok: boolean;
   columns: string[];
-  rows: Array<Record<string, string | number | boolean | null>>;
+  rows: Record<string, string | number | boolean | null>[];
   rowLimit?: number;
   truncated?: boolean;
   error?: string;

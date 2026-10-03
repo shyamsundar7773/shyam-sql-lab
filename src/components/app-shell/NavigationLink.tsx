@@ -24,9 +24,10 @@ const icons = {
 type NavigationLinkProps = {
   item: NavigationItem;
   onNavigate?: () => void;
+  mobile?: boolean;
 };
 
-export function NavigationLink({ item, onNavigate }: NavigationLinkProps) {
+export function NavigationLink({ item, onNavigate, mobile = false }: NavigationLinkProps) {
   const pathname = usePathname();
   const { colors } = useAppTheme();
   const isActive = item.href === '/' ? pathname === '/' : pathname === item.href;
@@ -34,36 +35,44 @@ export function NavigationLink({ item, onNavigate }: NavigationLinkProps) {
   return (
     <Link href={item.href} asChild>
       <Pressable
+        accessibilityLabel={item.label}
         accessibilityRole="link"
         accessibilityState={{ selected: isActive }}
         onPress={onNavigate}
         style={({ pressed }) => [
-          styles.link,
+          viewStyles.link,
+          mobile ? viewStyles.mobileLink : undefined,
           isActive && { backgroundColor: colors.sidebarActive },
-          pressed && styles.pressed,
+          pressed && viewStyles.pressed,
         ]}>
-        <SymbolView
-          name={icons[item.icon]}
-          size={19}
-          tintColor={isActive ? colors.white : colors.sidebarText}
-          style={styles.icon}
-        />
-        <Text
-          style={[
-            styles.label,
-            { color: isActive ? colors.white : colors.sidebarText },
-            isActive && styles.activeLabel,
-          ]}>
-          {item.label}
-        </Text>
-        {isActive ? <View style={[styles.activeIndicator, { backgroundColor: colors.accent }]} /> : null}
-      </Pressable>
+          <View style={[viewStyles.contentRow, mobile ? viewStyles.mobileContentRow : undefined]}>
+            <SymbolView
+              name={icons[item.icon]}
+              size={mobile ? 25 : 19}
+              tintColor={isActive ? colors.white : colors.sidebarText}
+              style={[viewStyles.icon, mobile ? viewStyles.mobileIcon : undefined]}
+            />
+            <Text
+              style={[
+                textStyles.label,
+                mobile ? textStyles.mobileLabel : undefined,
+                { color: isActive ? colors.white : colors.sidebarText },
+                isActive && textStyles.activeLabel,
+              ]}
+              numberOfLines={1}>
+              {item.label}
+            </Text>
+          </View>
+          {isActive ? <View style={[viewStyles.activeIndicator, { backgroundColor: colors.accent }]} /> : null}
+        </Pressable>
     </Link>
   );
 }
 
-const styles = StyleSheet.create({
+const viewStyles = StyleSheet.create({
   link: {
+    width: '100%',
+    minWidth: 0,
     minHeight: 46,
     paddingHorizontal: 14,
     borderRadius: 12,
@@ -78,14 +87,29 @@ const styles = StyleSheet.create({
   icon: {
     width: 21,
     height: 21,
+    flexShrink: 0,
   },
-  label: {
-    flex: 1,
-    fontSize: 13,
-    fontWeight: '600',
+  contentRow: {
+    width: '100%',
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 13,
   },
-  activeLabel: {
-    fontWeight: '700',
+  mobileLink: {
+    minHeight: 56,
+    paddingHorizontal: 14,
+    borderRadius: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+  },
+  mobileContentRow: {
+    gap: 16,
+  },
+  mobileIcon: {
+    width: 28,
+    height: 28,
   },
   activeIndicator: {
     position: 'absolute',
@@ -94,5 +118,20 @@ const styles = StyleSheet.create({
     height: 24,
     borderTopRightRadius: 4,
     borderBottomRightRadius: 4,
+  },
+});
+
+const textStyles = StyleSheet.create({
+  label: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  mobileLabel: {
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  activeLabel: {
+    fontWeight: '700',
   },
 });

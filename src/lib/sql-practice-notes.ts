@@ -1,8 +1,24 @@
+import { sqlLearningCategories } from '../data/sqlLearningContent';
+
 export type PracticeNotesFilterableSet = {
   config: {
     categoryId: string;
     topicId: string;
   };
+};
+
+export type PracticePathIds = {
+  categoryId: string;
+  moduleId: string;
+  topicId: string;
+  subtopicId: string;
+};
+
+export type PracticeLearningContext = {
+  category: string;
+  module: string;
+  topic: string;
+  subtopic: string;
 };
 
 export type PracticeNotesQuestion = {
@@ -39,6 +55,20 @@ export function filterPracticedSets<T extends PracticeNotesFilterableSet>(
       (categoryId === 'all' || set.config.categoryId === categoryId) &&
       (topicId === 'all' || set.config.topicId === topicId),
   );
+}
+
+export function getPracticeLearningContext(config: PracticePathIds): PracticeLearningContext {
+  const category = sqlLearningCategories.find((item) => item.id === config.categoryId);
+  const module = category?.modules.find((item) => item.id === config.moduleId);
+  const topic = module?.topics.find((item) => item.id === config.topicId);
+  const subtopic = topic?.subtopics.find((item) => item.id === config.subtopicId);
+
+  return {
+    category: category?.title ?? config.categoryId,
+    module: module?.title ?? config.moduleId,
+    topic: topic?.title ?? config.topicId,
+    subtopic: subtopic?.title ?? config.subtopicId,
+  };
 }
 
 export function updatePracticeQuestionDraft<
