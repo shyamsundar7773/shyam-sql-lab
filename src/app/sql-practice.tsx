@@ -1,11 +1,5 @@
-import { PlaceholderScreen } from '@/components/PlaceholderScreen';
+import SqlPracticeScreen from '@/components/sql-practice/SqlPracticeScreen';
 
-export default function SqlPracticeScreen() {
-  return (
-    <PlaceholderScreen
-      title="SQL Practice"
-      description="Interactive SQL practice will appear here."
-      icon={{ ios: 'chevron.left.forwardslash.chevron.right', android: 'code', web: 'code' }}
-    />
-  );
+export default function SqlPracticeRoute() {
+  return <SqlPracticeScreen />;
 }

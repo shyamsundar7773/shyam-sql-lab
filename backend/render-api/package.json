@@ -2,10 +2,13 @@
   "name": "shyam-sql-lab-api",
   "version": "1.0.0",
   "private": true,
+  "engines": {
+    "node": ">=22.5.0"
+  },
   "scripts": {
     "dev": "tsx src/server.ts",
     "start": "tsx src/server.ts",
-    "test": "node --import tsx --test src/server.test.ts"
+    "test": "node --import tsx --test src/*.test.ts"
   },
   "dependencies": {
     "cors": "^2.8.6",
