@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { router } from 'expo-router';
+import { SymbolView } from 'expo-symbols';
 import {
   ActivityIndicator,
   Pressable,
@@ -7,6 +9,7 @@ import {
   Text,
   TextInput,
   View,
+  useWindowDimensions,
 } from 'react-native';
 
 import { PageHeader } from '@/components/PageHeader';
@@ -22,6 +25,7 @@ import {
   runPracticeSql,
   type PracticeChatMessage,
 } from '@/lib/api';
+import { getQuestionIndex, updatePracticeQuestionDraft } from '@/lib/sql-practice-notes';
 import { supabase } from '@/lib/supabase';
 import type {
   PracticeConversationMessage,
@@ -73,6 +77,8 @@ const setFilters: SetFilter[] = ['All', 'In Progress', 'Completed', 'Needs Revie
 export default function SqlPracticeScreen() {
   const { colors } = useAppTheme();
   const { user, session } = useAuth();
+  const { width } = useWindowDimensions();
+  const isDesktop = width >= DesignTokens.layout.desktopBreakpoint;
   const [sets, setSets] = useState<PracticeSetRecord[]>([]);
   const [activeSetId, setActiveSetId] = useState<string | null>(null);
   const [view, setView] = useState<PageView>('generate');
@@ -91,6 +97,7 @@ export default function SqlPracticeScreen() {
   const [questionType, setQuestionType] = useState<SqlPracticeQuestionType>('SELECT');
   const [questionCount, setQuestionCount] = useState(3);
   const [messages, setMessages] = useState<PracticeConversationMessage[]>([]);
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [attempts, setAttempts] = useState<PracticeAttemptRecord[]>([]);
   const [messageDraft, setMessageDraft] = useState('');
   const [evaluatorOpen, setEvaluatorOpen] = useState(false);
@@ -103,7 +110,15 @@ export default function SqlPracticeScreen() {
   const [storageError, setStorageError] = useState('');
   const sendLock = useRef(false);
   const pendingDraft = useRef<{ questionId: string; sql: string } | null>(null);
+  const evaluatorMessagesRef = useRef<ScrollView>(null);
+  const isAtLatestMessage = useRef(true);
   const { styles } = usePracticeStyles();
+
+  const scrollToLatestMessage = () => {
+    isAtLatestMessage.current = true;
+    setShowJumpToLatest(false);
+    evaluatorMessagesRef.current?.scrollToEnd({ animated: true });
+  };
 
   const category = useMemo(
     () => sqlLearningCategories.find((item) => item.id === selectedCategoryId) ?? null,
@@ -393,9 +408,10 @@ export default function SqlPracticeScreen() {
     if (!activeSet || !supabase) {
       return;
     }
-    const nextIndex = Math.min(
-      activeSet.questions.length - 1,
-      Math.max(0, activeSet.current_question_index + direction),
+    const nextIndex = getQuestionIndex(
+      activeSet.current_question_index,
+      activeSet.questions.length,
+      direction,
     );
     if (nextIndex === activeSet.current_question_index) {
       return;
@@ -553,6 +569,26 @@ export default function SqlPracticeScreen() {
 
   const openEvaluator = async () => {
     if (!currentQuestion || !supabase) {
+      return;
+    }
+    if (!isDesktop) {
+      const draftSave = await supabase
+        .from('practice_questions')
+        .update({
+          draft_sql: currentQuestion.draft_sql,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', currentQuestion.id);
+      if (draftSave.error) {
+        setStorageError(
+          `SQL draft could not be saved before opening the evaluator: ${draftSave.error.message}`,
+        );
+        return;
+      }
+      router.push({
+        pathname: '/sql-practice-evaluator',
+        params: { setId: activeSetId ?? '', questionId: currentQuestion.id },
+      });
       return;
     }
     setEvaluatorOpen(true);
@@ -797,7 +833,8 @@ export default function SqlPracticeScreen() {
       ) : null}
 
       {view === 'workspace' && activeSet && currentQuestion ? (
-        <View style={styles.workspace}>
+        <View style={[styles.workspace, isDesktop && styles.desktopWorkspace]}>
+          <View style={isDesktop ? styles.sqlColumn : undefined}>
           <Card style={styles.panel}>
             <View style={styles.workspaceHeading}>
               <View style={styles.headingCopy}>
@@ -891,19 +928,13 @@ export default function SqlPracticeScreen() {
                 multiline
                 value={currentQuestion.draft_sql}
                 onChangeText={(draft) => {
-                pendingDraft.current = { questionId: currentQuestion.id, sql: draft };
-                setSets((current) =>
-                    current.map((set) =>
-                      set.id !== activeSet.id
-                        ? set
-                        : {
-                            ...set,
-                            questions: set.questions.map((question) =>
-                              question.id === currentQuestion.id
-                                ? { ...question, draft_sql: draft }
-                                : question,
-                            ),
-                          },
+                  pendingDraft.current = { questionId: currentQuestion.id, sql: draft };
+                  setSets((current) =>
+                    updatePracticeQuestionDraft(
+                      current,
+                      activeSet.id,
+                      currentQuestion.id,
+                      draft,
                     ),
                   );
                 }}
@@ -924,7 +955,7 @@ export default function SqlPracticeScreen() {
                 {executing ? 'Running SQL…' : 'Run SQL'}
               </Button>
               <Button variant="secondary" onPress={() => void openEvaluator()}>
-                AI Evaluator
+                AI Evaluate
               </Button>
               {currentQuestion.status !== 'completed' ? (
                 <Button variant="secondary" onPress={() => void markCompleted()}>
@@ -950,17 +981,11 @@ export default function SqlPracticeScreen() {
                 sql: attempt.sql,
               };
               setSets((current) =>
-                current.map((set) =>
-                  set.id !== activeSet.id
-                    ? set
-                    : {
-                        ...set,
-                        questions: set.questions.map((question) =>
-                          question.id === currentQuestion.id
-                            ? { ...question, draft_sql: attempt.sql }
-                            : question,
-                        ),
-                      },
+                updatePracticeQuestionDraft(
+                  current,
+                  activeSet.id,
+                  currentQuestion.id,
+                  attempt.sql,
                 ),
               );
               void supabase
@@ -977,9 +1002,10 @@ export default function SqlPracticeScreen() {
                 });
             }}
           />
+          </View>
 
-          {evaluatorOpen ? (
-            <Card style={styles.panel}>
+          {evaluatorOpen && isDesktop ? (
+            <Card style={[styles.panel, styles.desktopEvaluator]}>
               <SectionHeader
                 title="AI Evaluator"
                 subtitle="A learning conversation about this question and your current SQL."
@@ -990,52 +1016,108 @@ export default function SqlPracticeScreen() {
                 }
               />
               {loadingMessages ? <ActivityIndicator color={colors.primary} /> : null}
-              <View style={styles.chatMessages}>
-                {messages.map((message) => (
-                  <View
-                    key={message.id}
+              <View style={styles.chatMessageViewport}>
+                <ScrollView
+                  ref={evaluatorMessagesRef}
+                  keyboardShouldPersistTaps="handled"
+                  nestedScrollEnabled
+                  onContentSizeChange={() => {
+                    if (isAtLatestMessage.current) {
+                      requestAnimationFrame(() =>
+                        evaluatorMessagesRef.current?.scrollToEnd({ animated: false }),
+                      );
+                    }
+                  }}
+                  onScroll={(event) => {
+                    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+                    const isNearLatest =
+                      contentSize.height - contentOffset.y - layoutMeasurement.height < 48;
+                    if (isAtLatestMessage.current !== isNearLatest) {
+                      isAtLatestMessage.current = isNearLatest;
+                      setShowJumpToLatest(!isNearLatest);
+                    }
+                  }}
+                  scrollEventThrottle={16}
+                  style={styles.chatMessageList}
+                  contentContainerStyle={styles.chatMessages}>
+                  {messages.map((message) => (
+                    <View
+                      key={message.id}
+                      style={[
+                        styles.chatBubble,
+                        {
+                          alignSelf: message.role === 'user' ? 'flex-end' : 'flex-start',
+                          backgroundColor:
+                            message.role === 'user' ? colors.primarySoft : colors.surfaceMuted,
+                          borderColor: colors.border,
+                        },
+                      ]}>
+                      {message.role === 'assistant' ? (
+                        <MarkdownContent content={message.content} compactContent />
+                      ) : (
+                        <Text style={[styles.chatUserText, { color: colors.primaryText }]}>
+                          {message.content}
+                        </Text>
+                      )}
+                    </View>
+                  ))}
+                </ScrollView>
+                {showJumpToLatest ? (
+                  <Pressable
+                    accessibilityLabel="Jump to latest message"
+                    accessibilityRole="button"
+                    onPress={scrollToLatestMessage}
                     style={[
-                      styles.chatBubble,
-                      {
-                        alignSelf: message.role === 'user' ? 'flex-end' : 'flex-start',
-                        backgroundColor:
-                          message.role === 'user' ? colors.primarySoft : colors.surfaceMuted,
-                        borderColor: colors.border,
-                      },
+                      styles.jumpToLatest,
+                      { backgroundColor: colors.surface, borderColor: colors.border },
                     ]}>
-                    {message.role === 'assistant' ? (
-                      <MarkdownContent content={message.content} />
-                    ) : (
-                      <Text style={[styles.chatUserText, { color: colors.primaryText }]}>
-                        {message.content}
-                      </Text>
-                    )}
-                  </View>
-                ))}
+                    <SymbolView
+                      name={{ ios: 'arrow.down', android: 'arrow_downward', web: 'arrow_downward' }}
+                      size={18}
+                      tintColor={colors.primaryText}
+                    />
+                  </Pressable>
+                ) : null}
               </View>
-              <View style={styles.chatInputRow}>
+              <View
+                style={[
+                  styles.chatInputRow,
+                  { backgroundColor: colors.surfaceMuted, borderColor: colors.border },
+                ]}>
                 <TextInput
                   accessibilityLabel="Ask the SQL evaluator a follow-up question"
                   maxLength={4_000}
                   multiline
                   value={messageDraft}
                   onChangeText={setMessageDraft}
-                  placeholder="Ask a follow-up, request an alternate approach, or ask for an example…"
+                  placeholder="Message the evaluator…"
                   placeholderTextColor={colors.mutedText}
-                  style={[
-                    styles.chatInput,
-                    {
-                      backgroundColor: colors.surfaceMuted,
-                      borderColor: colors.border,
-                      color: colors.primaryText,
-                    },
-                  ]}
+                  style={[styles.chatInput, { color: colors.primaryText }]}
                 />
-                <Button
+                <Pressable
+                  accessibilityLabel="Send message"
+                  accessibilityRole="button"
                   disabled={sendingMessage || !messageDraft.trim()}
-                  onPress={() => void sendEvaluatorMessage(messageDraft)}>
-                  {sendingMessage ? 'Sending…' : 'Send'}
-                </Button>
+                  onPress={() => {
+                    scrollToLatestMessage();
+                    void sendEvaluatorMessage(messageDraft);
+                  }}
+                  style={({ pressed }) => [
+                    styles.chatSendButton,
+                    { backgroundColor: colors.primary },
+                    pressed && styles.chatSendPressed,
+                    (sendingMessage || !messageDraft.trim()) && styles.chatSendDisabled,
+                  ]}>
+                  {sendingMessage ? (
+                    <ActivityIndicator color={colors.white} size="small" />
+                  ) : (
+                    <SymbolView
+                      name={{ ios: 'arrow.up', android: 'arrow_upward', web: 'arrow_upward' }}
+                      size={20}
+                      tintColor={colors.white}
+                    />
+                  )}
+                </Pressable>
               </View>
             </Card>
           ) : null}
@@ -1431,6 +1513,9 @@ function usePracticeStyles() {
         emptyText: { fontSize: 14, lineHeight: 21 },
         emptyTitle: { fontSize: 17, fontWeight: '700' },
         workspace: { gap: 16 },
+        desktopWorkspace: { flexDirection: 'row', alignItems: 'flex-start' },
+        sqlColumn: { flex: 6, minWidth: 0, gap: 16 },
+        desktopEvaluator: { flex: 4, minWidth: 0, maxHeight: 780 },
         workspaceHeading: { flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
         headingCopy: { flex: 1, gap: 8 },
         eyebrow: { fontSize: 11, fontWeight: '800', letterSpacing: 0.7 },
@@ -1479,24 +1564,69 @@ function usePracticeStyles() {
         workspaceActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 9 },
         resultSummary: { fontSize: 13, fontWeight: '700', marginBottom: 10 },
         sqlError: { borderRadius: 9, padding: 12 },
-        chatMessages: { gap: 12 },
+        chatMessageViewport: {
+          width: '100%',
+          minWidth: 0,
+          position: 'relative',
+        },
+        chatMessageList: {
+          width: '100%',
+          maxHeight: 320,
+        },
+        chatMessages: {
+          width: '100%',
+          gap: 12,
+          paddingVertical: 4,
+        },
         chatBubble: {
           maxWidth: '94%',
+          minWidth: 0,
+          flexShrink: 1,
           borderWidth: 1,
           borderRadius: 14,
-          padding: 12,
+          overflow: 'hidden',
+          padding: 8,
         },
         chatUserText: { fontSize: 14, lineHeight: 21 },
-        chatInputRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 10 },
+        jumpToLatest: {
+          position: 'absolute',
+          alignSelf: 'center',
+          bottom: 8,
+          width: 40,
+          height: 40,
+          borderRadius: 20,
+          borderWidth: 1,
+          alignItems: 'center',
+          justifyContent: 'center',
+        },
+        chatInputRow: {
+          minHeight: 56,
+          flexDirection: 'row',
+          alignItems: 'flex-end',
+          gap: 8,
+          marginTop: 12,
+          padding: 6,
+          borderWidth: 1,
+          borderRadius: 28,
+        },
+        chatSendButton: {
+          width: 42,
+          height: 42,
+          borderRadius: 21,
+          alignItems: 'center',
+          justifyContent: 'center',
+        },
+        chatSendPressed: { opacity: 0.82 },
+        chatSendDisabled: { opacity: 0.5 },
         chatInput: {
           flex: 1,
-          minHeight: 48,
-          maxHeight: 140,
-          borderWidth: 1,
-          borderRadius: 12,
+          minWidth: 0,
+          minHeight: 42,
+          maxHeight: 110,
           paddingHorizontal: 12,
-          paddingVertical: 10,
+          paddingVertical: 8,
           fontSize: 14,
+          lineHeight: 20,
         },
       }),
     [colors],

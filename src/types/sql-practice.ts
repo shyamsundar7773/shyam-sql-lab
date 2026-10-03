@@ -12,6 +12,7 @@ export type PracticeQuestionContent = {
   title: string;
   prompt: string;
   explanation: string;
+  solutionSql?: string;
   concepts: string[];
   tables: PracticeTable[];
 };

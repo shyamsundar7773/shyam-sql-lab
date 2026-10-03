@@ -157,6 +157,7 @@ test("authenticated SQL practice routes generate, execute, and evaluate without 
     title: "Read active customers",
     prompt: "Return the active customer names.",
     explanation: "Filter the customers by status.",
+    solutionSql: "SELECT name FROM customers WHERE status = 'active'",
     concepts: ["SELECT", "WHERE"],
     tables: [
       {
@@ -265,6 +266,7 @@ test("authenticated SQL practice routes generate, execute, and evaluate without 
 
     assert.equal(providerRequests.length, 2);
     assert.match(providerRequests[1].messages[0].content, /Return the active customer names/);
+    assert.match(providerRequests[1].messages[0].content, /Expected correct SQL answer: SELECT name FROM customers WHERE status = 'active'/);
     assert.match(providerRequests[1].messages[0].content, /SELECT name FROM customers/);
     assert.match(providerRequests[1].messages[0].content, /"name":"Mina"/);
     assert.equal(providerRequests[1].messages[1].content, "Can you explain WHERE?");

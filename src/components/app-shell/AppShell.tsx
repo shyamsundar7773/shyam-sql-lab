@@ -22,6 +22,7 @@ type AppShellProps = {
   children: ReactNode;
   mode: 'app' | 'auth' | 'loading' | 'redirecting';
   contentScrollable?: boolean;
+  immersive?: boolean;
 };
 
 const AppShellContentScrollableContext = createContext(false);
@@ -30,12 +31,16 @@ export function useAppShellContentScrollable() {
   return useContext(AppShellContentScrollableContext);
 }
 
-export function AppShell({ children, mode, contentScrollable = true }: AppShellProps) {
+export function AppShell({
+  children,
+  mode,
+  contentScrollable = true,
+  immersive = false,
+}: AppShellProps) {
   const { width } = useWindowDimensions();
   const { colors } = useAppTheme();
   const isDesktop = width >= DesignTokens.layout.desktopBreakpoint;
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
-
   if (mode === 'loading' || mode === 'redirecting') {
     return (
       <AppShellContentScrollableContext.Provider value={false}>
@@ -66,7 +71,7 @@ export function AppShell({ children, mode, contentScrollable = true }: AppShellP
         <View style={[styles.app, { backgroundColor: colors.background }]}>
           {isDesktop ? <Sidebar /> : null}
           <View style={[styles.main, { backgroundColor: colors.background }]}>
-            {!isDesktop ? (
+            {!isDesktop && !immersive ? (
               <View
                 style={[
                   styles.mobileHeader,
@@ -103,12 +108,15 @@ export function AppShell({ children, mode, contentScrollable = true }: AppShellP
                 </View>
               </View>
             ) : null}
-            {contentScrollable ? (
+            {contentScrollable && !immersive ? (
               <ScrollView
                 style={[styles.contentScroll, { backgroundColor: colors.background }]}
                 contentContainerStyle={[styles.content, !isDesktop && styles.mobileContent]}
+                keyboardShouldPersistTaps="handled"
                 showsVerticalScrollIndicator={false}>
-                <View style={styles.page}>{children}</View>
+                <View style={styles.page}>
+                  {children}
+                </View>
                 <Text style={[styles.footerText, { color: colors.mutedText }]}>
                   Shyam SQL Lab · Your path to SQL confidence
                 </Text>
@@ -116,19 +124,21 @@ export function AppShell({ children, mode, contentScrollable = true }: AppShellP
             ) : (
               <View
                 style={[
-                  styles.fixedContent,
-                  !isDesktop && styles.mobileContent,
+                  immersive ? styles.immersiveContent : styles.fixedContent,
+                  !isDesktop && !immersive && styles.mobileContent,
                   { backgroundColor: colors.background },
                 ]}>
-                <View style={styles.page}>{children}</View>
+                <View style={immersive ? styles.immersivePage : styles.page}>{children}</View>
               </View>
             )}
           </View>
         </View>
-        <MobileNavigation
-          visible={mobileNavigationOpen}
-          onClose={() => setMobileNavigationOpen(false)}
-        />
+        {!immersive ? (
+          <MobileNavigation
+            visible={mobileNavigationOpen}
+            onClose={() => setMobileNavigationOpen(false)}
+          />
+        ) : null}
       </SafeAreaView>
     </AppShellContentScrollableContext.Provider>
   );
@@ -220,6 +230,12 @@ const styles = StyleSheet.create({
     paddingTop: 36,
     paddingBottom: 24,
   },
+  immersiveContent: {
+    flex: 1,
+    minWidth: 0,
+    width: '100%',
+    alignSelf: 'stretch',
+  },
   content: {
     width: '100%',
     maxWidth: DesignTokens.layout.contentMaxWidth,
@@ -234,6 +250,10 @@ const styles = StyleSheet.create({
     paddingTop: 22,
   },
   page: {
+    flex: 1,
+    minWidth: 0,
+  },
+  immersivePage: {
     flex: 1,
     minWidth: 0,
   },

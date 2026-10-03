@@ -8,9 +8,11 @@ import {
 } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
+import { useWindowDimensions } from 'react-native';
 
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import { AppShell } from '@/components/app-shell/AppShell';
+import { DesignTokens } from '@/constants/theme';
 import { AuthProvider, useAuth } from '@/contexts/auth-context';
 import { ThemeProvider, useAppTheme } from '@/contexts/theme-context';
 
@@ -29,10 +31,13 @@ export default function RootLayout() {
 function ThemeAwareApp() {
   const { colors, isDark } = useAppTheme();
   const { user, loading } = useAuth();
+  const { width } = useWindowDimensions();
   const pathname = usePathname();
   const baseTheme = isDark ? DarkTheme : DefaultTheme;
   const isAuthRoute = pathname === '/auth';
   const isTopicRoute = pathname === '/topic' || pathname.startsWith('/topic/');
+  const isPracticeEvaluatorRoute = pathname === '/sql-practice-evaluator';
+  const isDesktop = width >= DesignTokens.layout.desktopBreakpoint;
   const shellMode = loading
     ? 'loading'
     : user
@@ -62,7 +67,10 @@ function ThemeAwareApp() {
         {!loading ? <AnimatedSplashOverlay /> : null}
         {!loading && !user && !isAuthRoute ? <Redirect href="/auth" /> : null}
         {!loading && user && isAuthRoute ? <Redirect href="/" /> : null}
-        <AppShell mode={shellMode} contentScrollable={!isTopicRoute}>
+        <AppShell
+          mode={shellMode}
+          contentScrollable={!isTopicRoute && !isPracticeEvaluatorRoute}
+          immersive={isPracticeEvaluatorRoute && !isDesktop}>
           <Slot />
         </AppShell>
       </>

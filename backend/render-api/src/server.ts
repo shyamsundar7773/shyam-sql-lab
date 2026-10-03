@@ -158,9 +158,9 @@ app.post("/api/practice/generate", async (request, response) => {
         content: [
           "Create SQL practice questions for a learning application. Return only a JSON object with a questions array.",
           "Generate exactly the requested number of distinct, solvable questions. Provide synthetic table data and correct SQLite-compatible column types.",
-          "Each question must have title, prompt, explanation, concepts, and tables. Each table has name, columns [{name,type}], rows [{...}].",
+          "Each question must have title, prompt, explanation, solutionSql, concepts, and tables. solutionSql must be one correct, read-only SQLite SELECT/WITH answer for the prompt. Each table has name, columns [{name,type}], rows [{...}].",
           "Column types must be TEXT, INTEGER, REAL, or BOOLEAN. Row keys must exactly match the table columns. Use identifiers matching [A-Za-z_][A-Za-z0-9_]{0,47}.",
-          "Use 2-8 rows per table where useful. Do not include solution SQL, scripts, markdown, or any instructions to execute writes.",
+          "Use 2-8 rows per table where useful. Put the correct answer only in solutionSql. Do not include scripts, markdown, or instructions to execute writes.",
           "Make each question self-contained; JOIN questions must include at least two related tables.",
         ].join("\n"),
       },
@@ -170,7 +170,7 @@ app.post("/api/practice/generate", async (request, response) => {
       },
     ], 8_000);
     const payload = parseJsonObject(completion);
-    if (!payload || !validateGeneratedQuestions(payload.questions, input.count)) {
+    if (!payload || !validateGeneratedQuestions(payload.questions, input.count, true)) {
       response.status(502).json({ error: "The practice generator returned invalid question data. Please retry." });
       return;
     }
@@ -237,6 +237,7 @@ app.post("/api/practice/evaluate", async (request, response) => {
           "Answer follow-up doubts, show alternate SQL approaches, and give examples when asked.",
           `Exact practice question: ${input.question.prompt}`,
           `Question context: ${input.question.explanation}`,
+          `Expected correct SQL answer: ${input.question.solutionSql ?? "(not stored for this older question)"}`,
           `Concepts: ${input.question.concepts.join(", ")}`,
           `Tables: ${JSON.stringify(input.question.tables.map((table) => ({
             name: table.name,

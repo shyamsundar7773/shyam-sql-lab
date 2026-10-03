@@ -11,6 +11,7 @@ const question: GeneratedQuestion = {
   title: "Active customers",
   prompt: "Return active customers.",
   explanation: "Filter the customers by status.",
+  solutionSql: "SELECT name FROM customers WHERE status = 'active'",
   concepts: ["SELECT", "WHERE"],
   tables: [
     {
@@ -87,4 +88,23 @@ test("practice question validation rejects unsafe schema identifiers", () => {
   };
   assert.equal(validateGeneratedQuestions([invalidQuestion], 1), false);
   assert.equal(validateGeneratedQuestions([question], 1), true);
+});
+
+test("newly generated questions require a valid read-only SQL solution", () => {
+  assert.equal(validateGeneratedQuestions([question], 1, true), true);
+  const missingSolution = { ...question };
+  delete (missingSolution as Partial<GeneratedQuestion>).solutionSql;
+  assert.equal(validateGeneratedQuestions([missingSolution], 1, true), false);
+  assert.equal(
+    validateGeneratedQuestions([{ ...question, solutionSql: "DELETE FROM customers" }], 1, true),
+    false,
+  );
+  assert.equal(
+    validateGeneratedQuestions(
+      [{ ...question, solutionSql: "SELECT name FROM missing_table" }],
+      1,
+      true,
+    ),
+    false,
+  );
 });

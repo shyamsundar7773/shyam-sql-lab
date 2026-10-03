@@ -10,6 +10,7 @@ export type GeneratedQuestion = {
   title: string;
   prompt: string;
   explanation: string;
+  solutionSql?: string;
   concepts: string[];
   tables: PracticeTable[];
 };
@@ -51,7 +52,11 @@ const allowedFunctions = new Set([
 const maximumRowsPerTable = 25;
 const maximumResultRows = 200;
 
-export function validateGeneratedQuestions(value: unknown, expectedCount: number): value is GeneratedQuestion[] {
+export function validateGeneratedQuestions(
+  value: unknown,
+  expectedCount: number,
+  requireSolution = false,
+): value is GeneratedQuestion[] {
   if (!Array.isArray(value) || value.length !== expectedCount) {
     return false;
   }
@@ -64,6 +69,11 @@ export function validateGeneratedQuestions(value: unknown, expectedCount: number
       !isText(item.title, 160) ||
       !isText(item.prompt, 2000) ||
       !isText(item.explanation, 2000) ||
+      (requireSolution && !isText(item.solutionSql, 10_000)) ||
+      (item.solutionSql !== undefined &&
+        (!isText(item.solutionSql, 10_000) ||
+          !/^\s*(select|with)\b/i.test(item.solutionSql) ||
+          !isSingleStatement(item.solutionSql))) ||
       !Array.isArray(item.concepts) ||
       item.concepts.length > 8 ||
       !item.concepts.every((concept) => isText(concept, 80)) ||
@@ -76,7 +86,7 @@ export function validateGeneratedQuestions(value: unknown, expectedCount: number
 
     const tableNames = new Set<string>();
     let totalRows = 0;
-    return item.tables.every((table) => {
+    const tablesValid = item.tables.every((table) => {
       if (
         !isRecord(table) ||
         !isIdentifier(table.name) ||
@@ -124,6 +134,17 @@ export function validateGeneratedQuestions(value: unknown, expectedCount: number
           ),
       );
     });
+    if (!tablesValid) {
+      return false;
+    }
+    if (item.solutionSql !== undefined) {
+      try {
+        executePracticeSql(item as unknown as GeneratedQuestion, item.solutionSql);
+      } catch {
+        return false;
+      }
+    }
+    return true;
   });
 }
 

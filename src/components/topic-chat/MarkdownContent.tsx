@@ -8,7 +8,13 @@ import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { DesignTokens } from '@/constants/theme';
 import { useAppTheme } from '@/contexts/theme-context';
 
-export function MarkdownContent({ content }: { content: string }) {
+export function MarkdownContent({
+  content,
+  compactContent = false,
+}: {
+  content: string;
+  compactContent?: boolean;
+}) {
   const { colors } = useAppTheme();
   const markdownStyles = useMemo<MarkdownStyleMap>(
     () => ({
@@ -18,15 +24,19 @@ export function MarkdownContent({ content }: { content: string }) {
         fontSize: 16,
         lineHeight: 25,
         width: '100%',
+        minWidth: 0,
+        flexShrink: 1,
       },
       paragraph: {
         marginTop: 0,
-        marginBottom: 12,
+        marginBottom: compactContent ? 4 : 12,
         flexWrap: 'wrap',
         flexDirection: 'row',
         alignItems: 'flex-start',
         justifyContent: 'flex-start',
         width: '100%',
+        minWidth: 0,
+        flexShrink: 1,
       },
       heading1: {
         color: colors.primaryText,
@@ -161,7 +171,9 @@ export function MarkdownContent({ content }: { content: string }) {
         lineHeight: 22,
       },
       table: {
-        minWidth: 400,
+        width: compactContent ? '100%' : undefined,
+        maxWidth: compactContent ? '100%' : undefined,
+        minWidth: compactContent ? 0 : 400,
         borderWidth: 1,
         borderColor: colors.border,
         borderRadius: 8,
@@ -171,17 +183,20 @@ export function MarkdownContent({ content }: { content: string }) {
         borderBottomWidth: StyleSheet.hairlineWidth,
         borderColor: colors.border,
         flexDirection: 'row',
+        width: compactContent ? '100%' : undefined,
       },
       th: {
         flex: 1,
-        minWidth: 110,
-        padding: 9,
+        minWidth: compactContent ? 0 : 110,
+        flexShrink: compactContent ? 1 : 0,
+        padding: compactContent ? 6 : 9,
         backgroundColor: colors.surfaceMuted,
       },
       td: {
         flex: 1,
-        minWidth: 110,
-        padding: 9,
+        minWidth: compactContent ? 0 : 110,
+        flexShrink: compactContent ? 1 : 0,
+        padding: compactContent ? 6 : 9,
       },
       link: {
         color: colors.primary,
@@ -196,35 +211,65 @@ export function MarkdownContent({ content }: { content: string }) {
         paddingVertical: 4,
       },
     }),
-    [colors],
+    [colors, compactContent],
   );
-  const rules = useMemo<RenderRules>(
-    () => ({
-      table: (node, children, _parent, styles) => (
-        <ScrollView
-          key={node.key}
-          horizontal
-          nestedScrollEnabled
-          showsHorizontalScrollIndicator
-          style={tableStyles.viewport}>
-          <View style={styles._VIEW_SAFE_table}>{children}</View>
-        </ScrollView>
-      ),
-      code_block: (node, _children, _parent, styles) => (
-        <ScrollView
-          key={node.key}
-          horizontal
-          nestedScrollEnabled
-          showsHorizontalScrollIndicator
-          style={codeStyles.viewport}>
-          <Text selectable style={styles.code_block}>
-            {node.content.replace(/\n$/, '')}
-          </Text>
-        </ScrollView>
-      ),
-    }),
-    [],
-  );
+  const rules = useMemo<RenderRules>(() => {
+    const renderRules: RenderRules = {
+      table: compactContent
+        ? (node, children, _parent, styles) => (
+            <View
+              key={node.key}
+              style={[styles._VIEW_SAFE_table, codeStyles.wrapped]}>
+              {children}
+            </View>
+          )
+        : (node, children, _parent, styles) => (
+            <ScrollView
+              key={node.key}
+              horizontal
+              nestedScrollEnabled
+              showsHorizontalScrollIndicator
+              style={tableStyles.viewport}>
+              <View style={styles._VIEW_SAFE_table}>{children}</View>
+            </ScrollView>
+          ),
+      code_block: compactContent
+        ? (node, _children, _parent, styles) => (
+            <Text
+              key={node.key}
+              selectable
+              style={[styles.code_block, codeStyles.wrapped]}>
+              {node.content.replace(/\n$/, '')}
+            </Text>
+          )
+        : (node, _children, _parent, styles) => (
+            <ScrollView
+              key={node.key}
+              horizontal
+              nestedScrollEnabled
+              showsHorizontalScrollIndicator
+              style={codeStyles.viewport}>
+              <Text selectable style={styles.code_block}>
+                {node.content.replace(/\n$/, '')}
+              </Text>
+            </ScrollView>
+          ),
+    };
+
+    if (compactContent) {
+      renderRules.fence = (node, _children, _parent, styles) => (
+        <View key={node.key} style={styles._VIEW_SAFE_fence}>
+          <View style={styles._VIEW_SAFE_fence_code}>
+            <Text selectable style={[styles.fence_token, codeStyles.wrapped]}>
+              {node.content.replace(/\n$/, '')}
+            </Text>
+          </View>
+        </View>
+      );
+    }
+
+    return renderRules;
+  }, [compactContent]);
 
   return (
     <Markdown style={markdownStyles} rules={rules}>
@@ -236,6 +281,11 @@ export function MarkdownContent({ content }: { content: string }) {
 const codeStyles = StyleSheet.create({
   viewport: {
     maxWidth: '100%',
+  },
+  wrapped: {
+    width: '100%',
+    flexShrink: 1,
+    flexWrap: 'wrap',
   },
 });
 
