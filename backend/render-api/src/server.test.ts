@@ -146,6 +146,104 @@ test("SQL practice execution and evaluator reject unauthenticated requests", asy
   }
 });
 
+test("Notes organization rejects requests without authentication", async () => {
+  const response = await fetch(`${baseUrl}/api/notes/organize`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chunks: ["A SQL SELECT query returns requested columns."],
+    }),
+  });
+
+  assert.equal(response.status, 401);
+  assert.deepEqual(await response.json(), {
+    error: "Sign in to use SQL practice.",
+  });
+});
+
+test("Notes organizer validates mapped taxonomy and rejects fabricated IDs", async () => {
+  const originalFetch = globalThis.fetch;
+  const previousEnvironment = {
+    supabaseUrl: process.env.SUPABASE_URL,
+    supabaseKey: process.env.SUPABASE_PUBLISHABLE_KEY,
+    groqKey: process.env.GROQ_API_KEY,
+  };
+  let organizedItem = {
+    title: "Selecting columns",
+    content: "Use SELECT to choose the columns returned by a query.",
+    categoryId: "sql-foundations",
+    moduleId: "query-basics",
+    topicId: "query-structure",
+    subtopicId: "select-list",
+    needsChanges: false,
+    reason: "This chunk explains the SELECT list.",
+  };
+
+  process.env.SUPABASE_URL = "https://supabase.test";
+  process.env.SUPABASE_PUBLISHABLE_KEY = "test-publishable-key";
+  process.env.GROQ_API_KEY = "test-groq-key";
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url.startsWith(baseUrl)) {
+      return originalFetch(input, init);
+    }
+    if (url.endsWith("/auth/v1/user")) {
+      return new Response(JSON.stringify({ id: "test-user" }), { status: 200 });
+    }
+    if (url === "https://api.groq.com/openai/v1/chat/completions") {
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: JSON.stringify({ items: [organizedItem] }) } }] }),
+        { status: 200 },
+      );
+    }
+    throw new Error(`Unexpected outbound request: ${url}`);
+  };
+
+  try {
+    const response = await fetch(`${baseUrl}/api/notes/organize`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-access-token",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        chunks: ["A SQL SELECT query returns requested columns."],
+      }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      items: [organizedItem],
+      categoriesAdded: 1,
+      topicsAdded: 1,
+      itemsNeedChanges: 0,
+    });
+
+    organizedItem = {
+      ...organizedItem,
+      topicId: "invented-topic",
+    };
+    const invalidResponse = await fetch(`${baseUrl}/api/notes/organize`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-access-token",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        chunks: ["A SQL SELECT query returns requested columns."],
+      }),
+    });
+    assert.equal(invalidResponse.status, 502);
+    assert.deepEqual(await invalidResponse.json(), {
+      error: "The AI organizer returned invalid taxonomy data. Please retry.",
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreEnvironment("SUPABASE_URL", previousEnvironment.supabaseUrl);
+    restoreEnvironment("SUPABASE_PUBLISHABLE_KEY", previousEnvironment.supabaseKey);
+    restoreEnvironment("GROQ_API_KEY", previousEnvironment.groqKey);
+  }
+});
+
 test("authenticated SQL practice routes generate, execute, and evaluate without live providers", async () => {
   const originalFetch = globalThis.fetch;
   const previousEnvironment = {
