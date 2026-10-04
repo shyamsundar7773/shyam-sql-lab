@@ -461,8 +461,8 @@ test("Notes organizer preserves taxonomy, budgets batches, and handles provider 
     const firstBudgetedCall = groqRequests.length;
     groqResponseHeadersSequence = [
       new Headers({
-        "x-ratelimit-remaining-tokens": "0",
-        "x-ratelimit-reset-tokens": "0.02s",
+        "x-ratelimit-remaining-tokens": "3685",
+        "x-ratelimit-reset-tokens": "32.362s",
       }),
       new Headers(),
     ];
@@ -487,8 +487,31 @@ test("Notes organizer preserves taxonomy, budgets batches, and handles provider 
     assert.deepEqual(chunkOccurrences, largeSourceChunks);
     assert.ok(splitPayloads.flatMap((payload) => payload.chunks).some((chunk) => /漢字|🧪/.test(chunk)));
     assert.ok(splitPayloads.flatMap((payload) => payload.chunks).some((chunk) => /[{}[\];:=<>+*/]/.test(chunk)));
-    assert.ok(Date.now() - budgetStartTime >= 15, "token reset header delays the next batch");
+    assert.ok(Date.now() - budgetStartTime >= 32_000, "a 32-second token reset is respected");
     assert.ok(splitRequests.every((requestBody) => requestBody.max_completion_tokens === 3_000));
+
+    groqResponseHeadersSequence = [
+      new Headers({
+        "x-ratelimit-remaining-tokens": "0",
+        "x-ratelimit-reset-tokens": "60.001s",
+      }),
+    ];
+    const overMaximumResetCallCount = groqRequests.length;
+    const overMaximumReset = await fetch(`${baseUrl}/api/notes/organize`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-access-token",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ chunks: largeSourceChunks }),
+    });
+    assert.equal(overMaximumReset.status, 502);
+    assert.equal(groqRequests.length - overMaximumResetCallCount, 1,
+      "token reset beyond 60 seconds is not waited through");
+    assert.ok(organizerErrors.some((line) =>
+      line.includes('"retryAfterMs":60001') && line.includes('"retryable":false'),
+    ));
+    groqResponseHeadersSequence = null;
 
     const oversizedChunk = "!;".repeat(5_000);
     const oversizedCallCount = groqRequests.length;
@@ -600,7 +623,7 @@ test("Notes organizer preserves taxonomy, budgets batches, and handles provider 
     groqResponseStatusSequence = null;
     groqResponseHeadersSequence = null;
     groqResponseStatus = 429;
-    groqResponseHeaders = new Headers({ "retry-after": "30.001" });
+    groqResponseHeaders = new Headers({ "retry-after": "60.001" });
     const boundedWaitCount = groqRequests.length;
     const boundedWaitStart = Date.now();
     const boundedWaitFailure = await fetch(`${baseUrl}/api/notes/organize`, {
