@@ -161,8 +161,12 @@ test("Notes organization rejects requests without authentication", async () => {
   });
 });
 
-test("Notes organizer preserves valid taxonomy and marks unknown IDs for review", async () => {
+test("Notes organizer preserves taxonomy, budgets batches, and handles provider rate limits", async () => {
   const originalFetch = globalThis.fetch;
+  const originalConsoleWarn = console.warn;
+  const originalConsoleError = console.error;
+  const organizerWarnings: string[] = [];
+  const organizerErrors: string[] = [];
   const previousEnvironment = {
     supabaseUrl: process.env.SUPABASE_URL,
     supabaseKey: process.env.SUPABASE_PUBLISHABLE_KEY,
@@ -187,15 +191,24 @@ test("Notes organizer preserves valid taxonomy and marks unknown IDs for review"
   let completionText = JSON.stringify({ items: [organizedItem] });
   let jsonModeRequested = false;
   let groqResponseStatus = 200;
+  let groqResponseHeaders = new Headers();
+  let groqErrorBody: unknown = { error: { message: "Provider rejected the request." } };
+  let groqResponseStatusSequence: number[] | null = null;
+  let groqResponseHeadersSequence: Headers[] | null = null;
+  let autoCompletion = false;
   const groqRequests: Array<{
+    max_completion_tokens: number;
     response_format?: { type?: string };
     messages: Array<{ role: string; content: string }>;
   }> = [];
+  const groqRequestBodies: string[] = [];
   const mockGroqPayloadLimitBytes = 20_000;
 
   process.env.SUPABASE_URL = "https://supabase.test";
   process.env.SUPABASE_PUBLISHABLE_KEY = "test-publishable-key";
   process.env.GROQ_API_KEY = "test-groq-key";
+  console.warn = (...args) => organizerWarnings.push(args.map(String).join(" "));
+  console.error = (...args) => organizerErrors.push(args.map(String).join(" "));
   globalThis.fetch = async (input, init) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     if (url.startsWith(baseUrl)) {
@@ -207,17 +220,39 @@ test("Notes organizer preserves valid taxonomy and marks unknown IDs for review"
     if (url === "https://api.groq.com/openai/v1/chat/completions") {
       const serializedRequest = String(init?.body);
       const requestBody = JSON.parse(serializedRequest) as {
+        max_completion_tokens: number;
         response_format?: { type?: string };
         messages: Array<{ role: string; content: string }>;
       };
       groqRequests.push(requestBody);
+      groqRequestBodies.push(serializedRequest);
       jsonModeRequested = requestBody.response_format?.type === "json_object";
       if (Buffer.byteLength(serializedRequest) > mockGroqPayloadLimitBytes) {
         return new Response(JSON.stringify({ error: "Request payload too large." }), { status: 413 });
       }
+      const responseStatus = groqResponseStatusSequence?.shift() ?? groqResponseStatus;
+      const responseHeaders = groqResponseHeadersSequence?.shift() ?? groqResponseHeaders;
+      if (responseStatus !== 200) {
+        return new Response(JSON.stringify(groqErrorBody), {
+          status: responseStatus,
+          headers: responseHeaders,
+        });
+      }
+      let responseText = completionText;
+      if (autoCompletion) {
+        const userMessage = requestBody.messages.find((message) => message.role === "user")?.content ?? "{}";
+        const sentInput = JSON.parse(userMessage) as { chunks: string[] };
+        responseText = JSON.stringify({
+          items: sentInput.chunks.map((content, index) => ({
+            ...organizedItem,
+            title: `Organized item ${index + 1}`,
+            content,
+          })),
+        });
+      }
       return new Response(
-        JSON.stringify({ choices: [{ message: { content: completionText } }] }),
-        { status: groqResponseStatus },
+        JSON.stringify({ choices: [{ message: { content: responseText } }] }),
+        { status: 200, headers: responseHeaders },
       );
     }
     throw new Error(`Unexpected outbound request: ${url}`);
@@ -383,6 +418,8 @@ test("Notes organizer preserves valid taxonomy and marks unknown IDs for review"
     }));
     assert.ok(JSON.stringify(previousResult).length < 50_000);
     assert.ok(Buffer.byteLength(JSON.stringify(previousResult)) > mockGroqPayloadLimitBytes);
+    const firstRetryRequestIndex = groqRequests.length;
+    autoCompletion = true;
     completionText = JSON.stringify({
       items: retryChunks.map((_, index) => ({
         ...organizedItem,
@@ -401,23 +438,87 @@ test("Notes organizer preserves valid taxonomy and marks unknown IDs for review"
       }),
     });
     assert.equal(reorganizedResponse.status, 200);
-    const lastGroqRequest = groqRequests.at(-1);
-    assert.ok(lastGroqRequest);
-    const sentUserPayload = JSON.parse(
-      lastGroqRequest.messages.find((message) => message.role === "user")?.content ?? "{}",
-    ) as {
-      chunks: string[];
-      previousResult: Array<Record<string, unknown>>;
-    };
-    assert.deepEqual(sentUserPayload.chunks, retryChunks.map((chunk) => chunk.trim()));
-    assert.equal(sentUserPayload.previousResult.length, retryChunks.length);
-    assert.equal(sentUserPayload.previousResult[0]?.title, previousResult[0]?.title);
-    assert.equal(sentUserPayload.previousResult[0]?.reason, previousResult[0]?.reason);
-    assert.equal(sentUserPayload.previousResult[0]?.needsChanges, true);
-    assert.equal("content" in (sentUserPayload.previousResult[0] ?? {}), false);
-    assert.ok(Buffer.byteLength(JSON.stringify(lastGroqRequest)) <= mockGroqPayloadLimitBytes);
+    const retryRequests = groqRequests.slice(firstRetryRequestIndex);
+    const retryPayloads = retryRequests.map((requestBody) => JSON.parse(
+      requestBody.messages.find((message) => message.role === "user")?.content ?? "{}",
+    ) as { chunks: string[]; previousResult: Array<Record<string, unknown>> });
+    assert.ok(retryRequests.length > 1, "oversized request is split into sequential batches");
+    assert.ok(retryRequests.every((requestBody) => requestBody.max_completion_tokens === 3_000));
+    assert.deepEqual(retryPayloads.flatMap((payload) => payload.chunks), retryChunks.map((chunk) => chunk.trim()));
+    assert.deepEqual(retryPayloads.flatMap((payload) => payload.previousResult).map((item) => item.title),
+      previousResult.map((item) => item.title));
+    assert.equal(retryPayloads[0]?.previousResult[0]?.reason, previousResult[0]?.reason);
+    assert.equal(retryPayloads[0]?.previousResult[0]?.needsChanges, true);
+    assert.equal("content" in (retryPayloads[0]?.previousResult[0] ?? {}), false);
+    assert.ok(groqRequestBodies.slice(firstRetryRequestIndex)
+      .every((body) => Buffer.byteLength(body) <= mockGroqPayloadLimitBytes));
+
+    const largeSourceChunks = [
+      `SELECT * FROM notes WHERE topic_id = 42; -- ${"{}[](),.;:=<>+-*/ ".repeat(80).trimEnd()}`,
+      `${"漢字かなカナ".repeat(45)}${"🧪🚀✨".repeat(45)}`,
+      `Source chunk C ${"original text ".repeat(90).trimEnd()}`,
+    ];
+    const firstBudgetedCall = groqRequests.length;
+    groqResponseHeadersSequence = [
+      new Headers({
+        "x-ratelimit-remaining-tokens": "0",
+        "x-ratelimit-reset-tokens": "0.02s",
+      }),
+      new Headers(),
+    ];
+    const budgetStartTime = Date.now();
+    const splitResponse = await fetch(`${baseUrl}/api/notes/organize`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-access-token",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ chunks: largeSourceChunks }),
+    });
+    assert.equal(splitResponse.status, 200);
+    const splitRequests = groqRequests.slice(firstBudgetedCall);
+    const splitPayloads = splitRequests.map((requestBody) => JSON.parse(
+      requestBody.messages.find((message) => message.role === "user")?.content ?? "{}",
+    ) as { chunks: string[] });
+    assert.ok(splitRequests.length > 1, "request token budget splits batches");
+    assert.deepEqual(splitPayloads.flatMap((payload) => payload.chunks), largeSourceChunks);
+    const chunkOccurrences = splitPayloads.flatMap((payload) => payload.chunks);
+    assert.equal(new Set(chunkOccurrences).size, largeSourceChunks.length);
+    assert.deepEqual(chunkOccurrences, largeSourceChunks);
+    assert.ok(splitPayloads.flatMap((payload) => payload.chunks).some((chunk) => /漢字|🧪/.test(chunk)));
+    assert.ok(splitPayloads.flatMap((payload) => payload.chunks).some((chunk) => /[{}[\];:=<>+*/]/.test(chunk)));
+    assert.ok(Date.now() - budgetStartTime >= 15, "token reset header delays the next batch");
+    assert.ok(splitRequests.every((requestBody) => requestBody.max_completion_tokens === 3_000));
+
+    const oversizedChunk = "!;".repeat(5_000);
+    const oversizedCallCount = groqRequests.length;
+    const oversizedChunkResponse = await fetch(`${baseUrl}/api/notes/organize`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-access-token",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ chunks: [oversizedChunk] }),
+    });
+    assert.equal(oversizedChunkResponse.status, 413);
+    const oversizedChunkBody = await oversizedChunkResponse.json();
+    assert.deepEqual(oversizedChunkBody, {
+      code: "ORGANIZER_REQUEST_TOO_LARGE",
+      error: "A note is too large to organize safely in one request.",
+    });
+    assert.equal(groqRequests.length, oversizedCallCount, "a single oversized chunk is rejected before provider calls");
+    assert.ok(!JSON.stringify(oversizedChunkBody).includes(oversizedChunk));
 
     groqResponseStatus = 429;
+    groqErrorBody = {
+      error: {
+        code: "insufficient_quota",
+        type: "insufficient_quota",
+        message: "Account quota exhausted for SELECT notes; api_key=gsk_sensitive_fake_key",
+      },
+    };
+    groqResponseHeaders = new Headers();
+    const quotaCallCount = groqRequests.length;
     const providerFailure = await fetch(`${baseUrl}/api/notes/organize`, {
       method: "POST",
       headers: {
@@ -429,13 +530,95 @@ test("Notes organizer preserves valid taxonomy and marks unknown IDs for review"
       }),
     });
     assert.equal(providerFailure.status, 502);
-    assert.deepEqual(await providerFailure.json(), {
+    const providerFailureBody = await providerFailure.json();
+    assert.deepEqual(providerFailureBody, {
       code: "AI_PROVIDER_REJECTED",
       error: "AI note organization is temporarily unavailable. Please retry.",
     });
+    assert.equal(groqRequests.length - quotaCallCount, 1, "quota 429 is not retried");
+    const providerSensitiveText = "Account quota exhausted for SELECT notes; api_key=gsk_sensitive_fake_key";
+    assert.ok(!organizerWarnings.join("\n").includes(providerSensitiveText));
+    assert.ok(!organizerErrors.join("\n").includes(providerSensitiveText));
+    assert.ok(!organizerWarnings.join("\n").includes("SELECT notes"));
+    assert.ok(!organizerErrors.join("\n").includes("SELECT notes"));
+    assert.ok(!organizerWarnings.join("\n").includes("gsk_sensitive_fake_key"));
+    assert.ok(!organizerErrors.join("\n").includes("gsk_sensitive_fake_key"));
+    assert.ok(!JSON.stringify(providerFailureBody).includes("gsk_sensitive_fake_key"));
+    assert.ok(!JSON.stringify(providerFailureBody).includes("SELECT notes"));
+
+    groqResponseStatus = 200;
+    groqResponseStatusSequence = [429, 200];
+    groqResponseHeadersSequence = [
+      new Headers({ "retry-after": "0.02" }),
+      new Headers(),
+    ];
+    groqErrorBody = {
+      error: {
+        code: "rate_limit_exceeded",
+        type: "rate_limit_error",
+        message: "Rate limit exceeded.",
+      },
+    };
+    const transientCallCount = groqRequests.length;
+    const retryStartTime = Date.now();
+    const recoveredRateLimit = await fetch(`${baseUrl}/api/notes/organize`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-access-token",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ chunks: ["A SQL SELECT query returns requested columns."] }),
+    });
+    assert.equal(recoveredRateLimit.status, 200);
+    assert.equal(groqRequests.length - transientCallCount, 2, "transient 429 is retried once");
+    assert.ok(Date.now() - retryStartTime >= 15, "retry-after delay is honored");
+    assert.ok(organizerWarnings.some((line) =>
+      line.includes('"providerType":"rate_limit"') &&
+      line.includes('"retryAfterMs":20') &&
+      line.includes('"rateLimit":{"retryAfter":"0.02"'),
+    ));
+    assert.ok(organizerWarnings.every((line) => !line.includes("A SQL SELECT query")));
+
+    groqResponseStatusSequence = [429, 429, 200];
+    groqResponseHeadersSequence = [
+      new Headers({ "retry-after": "0" }),
+      new Headers({ "retry-after": "0" }),
+      new Headers(),
+    ];
+    const exhaustedRetryCount = groqRequests.length;
+    const exhaustedRetry = await fetch(`${baseUrl}/api/notes/organize`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-access-token",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ chunks: ["A SQL SELECT query returns requested columns."] }),
+    });
+    assert.equal(exhaustedRetry.status, 502);
+    assert.equal(groqRequests.length - exhaustedRetryCount, 2, "a persistent transient 429 is retried only once");
+
+    groqResponseStatusSequence = null;
+    groqResponseHeadersSequence = null;
+    groqResponseStatus = 429;
+    groqResponseHeaders = new Headers({ "retry-after": "30.001" });
+    const boundedWaitCount = groqRequests.length;
+    const boundedWaitStart = Date.now();
+    const boundedWaitFailure = await fetch(`${baseUrl}/api/notes/organize`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-access-token",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ chunks: ["A SQL SELECT query returns requested columns."] }),
+    });
+    assert.equal(boundedWaitFailure.status, 502);
+    assert.equal(groqRequests.length - boundedWaitCount, 1, "retry wait beyond the bound is not attempted");
+    assert.ok(Date.now() - boundedWaitStart < 1_000, "excessive Retry-After does not block the API");
 
   } finally {
     globalThis.fetch = originalFetch;
+    console.warn = originalConsoleWarn;
+    console.error = originalConsoleError;
     restoreEnvironment("SUPABASE_URL", previousEnvironment.supabaseUrl);
     restoreEnvironment("SUPABASE_PUBLISHABLE_KEY", previousEnvironment.supabaseKey);
     restoreEnvironment("GROQ_API_KEY", previousEnvironment.groqKey);
