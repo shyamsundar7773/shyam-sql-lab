@@ -161,7 +161,7 @@ test("Notes organization rejects requests without authentication", async () => {
   });
 });
 
-test("Notes organizer validates mapped taxonomy and rejects fabricated IDs", async () => {
+test("Notes organizer preserves valid taxonomy and marks unknown IDs for review", async () => {
   const originalFetch = globalThis.fetch;
   const previousEnvironment = {
     supabaseUrl: process.env.SUPABASE_URL,
@@ -172,12 +172,21 @@ test("Notes organizer validates mapped taxonomy and rejects fabricated IDs", asy
     title: "Selecting columns",
     content: "Use SELECT to choose the columns returned by a query.",
     categoryId: "sql-foundations",
+    categoryName: "SQL Foundations",
+    categoryIsNew: false,
     moduleId: "query-basics",
+    moduleName: "Query Basics",
+    moduleIsNew: false,
     topicId: "query-structure",
+    topicName: "The shape of a SQL query",
+    topicIsNew: false,
     subtopicId: "select-list",
     needsChanges: false,
     reason: "This chunk explains the SELECT list.",
   };
+  let completionText = JSON.stringify({ items: [organizedItem] });
+  let jsonModeRequested = false;
+  let groqResponseStatus = 200;
 
   process.env.SUPABASE_URL = "https://supabase.test";
   process.env.SUPABASE_PUBLISHABLE_KEY = "test-publishable-key";
@@ -191,15 +200,20 @@ test("Notes organizer validates mapped taxonomy and rejects fabricated IDs", asy
       return new Response(JSON.stringify({ id: "test-user" }), { status: 200 });
     }
     if (url === "https://api.groq.com/openai/v1/chat/completions") {
+      const requestBody = JSON.parse(String(init?.body)) as {
+        response_format?: { type?: string };
+      };
+      jsonModeRequested = requestBody.response_format?.type === "json_object";
       return new Response(
-        JSON.stringify({ choices: [{ message: { content: JSON.stringify({ items: [organizedItem] }) } }] }),
-        { status: 200 },
+        JSON.stringify({ choices: [{ message: { content: completionText } }] }),
+        { status: groqResponseStatus },
       );
     }
     throw new Error(`Unexpected outbound request: ${url}`);
   };
 
   try {
+    completionText = `\`\`\`json\n${JSON.stringify({ items: [organizedItem] })}\n\`\`\``;
     const response = await fetch(`${baseUrl}/api/notes/organize`, {
       method: "POST",
       headers: {
@@ -211,17 +225,57 @@ test("Notes organizer validates mapped taxonomy and rejects fabricated IDs", asy
       }),
     });
     assert.equal(response.status, 200);
+    assert.equal(jsonModeRequested, true);
     assert.deepEqual(await response.json(), {
       items: [organizedItem],
-      categoriesAdded: 1,
-      topicsAdded: 1,
+      categoriesAdded: 0,
+      topicsAdded: 0,
       itemsNeedChanges: 0,
     });
 
     organizedItem = {
       ...organizedItem,
       topicId: "invented-topic",
+      topicName: "An unrecognized topic",
     };
+    completionText = JSON.stringify({
+      items: [
+        organizedItem,
+        { title: "Incomplete AI suggestion" },
+        {
+          title: "Warehouse schemas",
+          content: "A warehouse organizes analytical data.",
+          categoryId: null,
+          categoryName: "Data Warehousing",
+          categoryIsNew: true,
+          moduleId: null,
+          moduleName: "Dimensional Models",
+          moduleIsNew: true,
+          topicId: null,
+          topicName: "Star Schemas",
+          topicIsNew: true,
+          subtopicId: null,
+          needsChanges: false,
+          reason: "A new category and topic were identified.",
+        },
+        {
+          title: "Filtering",
+          content: "Filtering notes.",
+          categoryId: null,
+          categoryName: "SQL Foundations",
+          categoryIsNew: true,
+          moduleId: null,
+          moduleName: "Query Basics",
+          moduleIsNew: true,
+          topicId: null,
+          topicName: "Filtering returned rows",
+          topicIsNew: true,
+          subtopicId: null,
+          needsChanges: false,
+          reason: "A new topic belongs to an existing category and module.",
+        },
+      ],
+    });
     const invalidResponse = await fetch(`${baseUrl}/api/notes/organize`, {
       method: "POST",
       headers: {
@@ -229,13 +283,99 @@ test("Notes organizer validates mapped taxonomy and rejects fabricated IDs", asy
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
+        chunks: [
+          "A SQL SELECT query returns requested columns.",
+          "A second piece of original learning material.",
+          "A warehouse organizes analytical data.",
+          "Filtering notes.",
+        ],
+      }),
+    });
+    assert.equal(invalidResponse.status, 200);
+    assert.deepEqual(await invalidResponse.json(), {
+      items: [
+        {
+          ...organizedItem,
+          categoryId: null,
+          categoryIsNew: false,
+          moduleId: null,
+          moduleIsNew: false,
+          topicId: null,
+          topicIsNew: false,
+          subtopicId: null,
+          needsChanges: true,
+        },
+        {
+          title: "Incomplete AI suggestion",
+          content: "A second piece of original learning material.",
+          categoryId: null,
+          categoryName: "",
+          categoryIsNew: false,
+          moduleId: null,
+          moduleName: "",
+          moduleIsNew: false,
+          topicId: null,
+          topicName: "",
+          topicIsNew: false,
+          subtopicId: null,
+          needsChanges: true,
+          reason: "The organizer response was incomplete; the original content was preserved for review.",
+        },
+        {
+          title: "Warehouse schemas",
+          content: "A warehouse organizes analytical data.",
+          categoryId: null,
+          categoryName: "Data Warehousing",
+          categoryIsNew: true,
+          moduleId: null,
+          moduleName: "Dimensional Models",
+          moduleIsNew: true,
+          topicId: null,
+          topicName: "Star Schemas",
+          topicIsNew: true,
+          subtopicId: null,
+          needsChanges: false,
+          reason: "A new category and topic were identified.",
+        },
+        {
+          title: "Filtering",
+          content: "Filtering notes.",
+          categoryId: "sql-foundations",
+          categoryName: "SQL Foundations",
+          categoryIsNew: false,
+          moduleId: "query-basics",
+          moduleName: "Query Basics",
+          moduleIsNew: false,
+          topicId: null,
+          topicName: "Filtering returned rows",
+          topicIsNew: true,
+          subtopicId: null,
+          needsChanges: false,
+          reason: "A new topic belongs to an existing category and module.",
+        },
+      ],
+      categoriesAdded: 1,
+      topicsAdded: 2,
+      itemsNeedChanges: 2,
+    });
+
+    groqResponseStatus = 429;
+    const providerFailure = await fetch(`${baseUrl}/api/notes/organize`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer organizer-test-token",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
         chunks: ["A SQL SELECT query returns requested columns."],
       }),
     });
-    assert.equal(invalidResponse.status, 502);
-    assert.deepEqual(await invalidResponse.json(), {
-      error: "The AI organizer returned invalid taxonomy data. Please retry.",
+    assert.equal(providerFailure.status, 502);
+    assert.deepEqual(await providerFailure.json(), {
+      code: "AI_PROVIDER_REJECTED",
+      error: "AI note organization is temporarily unavailable. Please retry.",
     });
+
   } finally {
     globalThis.fetch = originalFetch;
     restoreEnvironment("SUPABASE_URL", previousEnvironment.supabaseUrl);
