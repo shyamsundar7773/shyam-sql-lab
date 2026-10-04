@@ -187,6 +187,11 @@ test("Notes organizer preserves valid taxonomy and marks unknown IDs for review"
   let completionText = JSON.stringify({ items: [organizedItem] });
   let jsonModeRequested = false;
   let groqResponseStatus = 200;
+  const groqRequests: Array<{
+    response_format?: { type?: string };
+    messages: Array<{ role: string; content: string }>;
+  }> = [];
+  const mockGroqPayloadLimitBytes = 20_000;
 
   process.env.SUPABASE_URL = "https://supabase.test";
   process.env.SUPABASE_PUBLISHABLE_KEY = "test-publishable-key";
@@ -200,10 +205,16 @@ test("Notes organizer preserves valid taxonomy and marks unknown IDs for review"
       return new Response(JSON.stringify({ id: "test-user" }), { status: 200 });
     }
     if (url === "https://api.groq.com/openai/v1/chat/completions") {
-      const requestBody = JSON.parse(String(init?.body)) as {
+      const serializedRequest = String(init?.body);
+      const requestBody = JSON.parse(serializedRequest) as {
         response_format?: { type?: string };
+        messages: Array<{ role: string; content: string }>;
       };
+      groqRequests.push(requestBody);
       jsonModeRequested = requestBody.response_format?.type === "json_object";
+      if (Buffer.byteLength(serializedRequest) > mockGroqPayloadLimitBytes) {
+        return new Response(JSON.stringify({ error: "Request payload too large." }), { status: 413 });
+      }
       return new Response(
         JSON.stringify({ choices: [{ message: { content: completionText } }] }),
         { status: groqResponseStatus },
@@ -358,6 +369,53 @@ test("Notes organizer preserves valid taxonomy and marks unknown IDs for review"
       topicsAdded: 2,
       itemsNeedChanges: 2,
     });
+
+    const retryChunks = Array.from(
+      { length: 10 },
+      (_, index) => `Unresolved SQL note ${index + 1}: ${"source text ".repeat(70)}`,
+    );
+    const previousResult = retryChunks.map((_, index) => ({
+      ...organizedItem,
+      title: `Unresolved note ${index + 1}`,
+      content: "x".repeat(3_500),
+      needsChanges: true,
+      reason: "The suggested location needs review against the current Learning Path.",
+    }));
+    assert.ok(JSON.stringify(previousResult).length < 50_000);
+    assert.ok(Buffer.byteLength(JSON.stringify(previousResult)) > mockGroqPayloadLimitBytes);
+    completionText = JSON.stringify({
+      items: retryChunks.map((_, index) => ({
+        ...organizedItem,
+        title: `Reorganized note ${index + 1}`,
+      })),
+    });
+    const reorganizedResponse = await fetch(`${baseUrl}/api/notes/organize`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer organizer-test-token",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        chunks: retryChunks,
+        previousResult,
+      }),
+    });
+    assert.equal(reorganizedResponse.status, 200);
+    const lastGroqRequest = groqRequests.at(-1);
+    assert.ok(lastGroqRequest);
+    const sentUserPayload = JSON.parse(
+      lastGroqRequest.messages.find((message) => message.role === "user")?.content ?? "{}",
+    ) as {
+      chunks: string[];
+      previousResult: Array<Record<string, unknown>>;
+    };
+    assert.deepEqual(sentUserPayload.chunks, retryChunks.map((chunk) => chunk.trim()));
+    assert.equal(sentUserPayload.previousResult.length, retryChunks.length);
+    assert.equal(sentUserPayload.previousResult[0]?.title, previousResult[0]?.title);
+    assert.equal(sentUserPayload.previousResult[0]?.reason, previousResult[0]?.reason);
+    assert.equal(sentUserPayload.previousResult[0]?.needsChanges, true);
+    assert.equal("content" in (sentUserPayload.previousResult[0] ?? {}), false);
+    assert.ok(Buffer.byteLength(JSON.stringify(lastGroqRequest)) <= mockGroqPayloadLimitBytes);
 
     groqResponseStatus = 429;
     const providerFailure = await fetch(`${baseUrl}/api/notes/organize`, {

@@ -461,7 +461,7 @@ app.post("/api/notes/organize", async (request, response) => {
         content: JSON.stringify({
           taxonomy: [...authoritativeNotesTaxonomy, ...input.privateTaxonomy],
           chunks: input.chunks,
-          previousResult: input.previousResult,
+          previousResult: compactPreviousOrganizerResult(input.previousResult),
         }),
       },
     ], 8_000);
@@ -781,6 +781,32 @@ function parseNotesOrganizationRequest(value: unknown): NotesOrganizationRequest
       scope: "private",
     })),
   };
+}
+
+function compactPreviousOrganizerResult(value: unknown): unknown {
+  if (!Array.isArray(value)) {
+    return value;
+  }
+  return value.map((item) => {
+    if (!isRecord(item)) {
+      return item;
+    }
+    return {
+      title: item.title,
+      categoryId: item.categoryId,
+      categoryName: item.categoryName,
+      categoryIsNew: item.categoryIsNew,
+      moduleId: item.moduleId,
+      moduleName: item.moduleName,
+      moduleIsNew: item.moduleIsNew,
+      topicId: item.topicId,
+      topicName: item.topicName,
+      topicIsNew: item.topicIsNew,
+      subtopicId: item.subtopicId,
+      needsChanges: item.needsChanges,
+      reason: item.reason,
+    };
+  });
 }
 
 function isOrganizerTaxonomyLocation(value: unknown): value is NotesTaxonomyLocation {
