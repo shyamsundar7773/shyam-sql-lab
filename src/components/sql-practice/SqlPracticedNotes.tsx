@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { BackHandler, ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { router, useFocusEffect } from 'expo-router';
 import { ChevronLeft } from 'lucide-react-native';
 
+import { useAppShellScrollToTopControl } from '@/components/app-shell/AppShell';
 import { MarkdownContent } from '@/components/topic-chat/MarkdownContent';
-import { Badge, Card, SectionHeader } from '@/components/ui/primitives';
+import { Badge, Button, Card, SectionHeader } from '@/components/ui/primitives';
 import { DesignTokens } from '@/constants/theme';
 import { useAuth } from '@/contexts/auth-context';
 import { useAppTheme } from '@/contexts/theme-context';
@@ -20,7 +22,6 @@ import type {
 
 type PracticeConfiguration = {
   categoryId: string;
-  moduleId: string;
   topicId: string;
   subtopicId: string;
   difficulty: SqlPracticeDifficulty;
@@ -40,8 +41,10 @@ type PracticeSet = {
 };
 
 type PracticeAttempt = {
+  id: string;
   question_id: string;
   sql: string;
+  execution_result: PracticeQuestionRecord['latest_result'];
   created_at: string;
 };
 
@@ -56,15 +59,44 @@ type FilterOption = { label: string; value: string };
 export function SqlPracticedNotes() {
   const { colors } = useAppTheme();
   const { user } = useAuth();
+  const setScrollControlsVisible = useAppShellScrollToTopControl();
   const [data, setData] = useState<PracticeNoteData>({ sets: [], attempts: [], messages: [] });
   const [categoryId, setCategoryId] = useState('all');
   const [topicId, setTopicId] = useState('all');
+  const [subtopicId, setSubtopicId] = useState('all');
   const [selectedSetId, setSelectedSetId] = useState<string | null>(null);
   const [selectedQuestionId, setSelectedQuestionId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [deleteConfirmation, setDeleteConfirmation] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
+  const [deletingSet, setDeletingSet] = useState(false);
 
   useEffect(() => {
+    setScrollControlsVisible(true);
+    return () => setScrollControlsVisible(false);
+  }, [setScrollControlsVisible]);
+
+  useEffect(() => {
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (selectedQuestionId) {
+        setSelectedQuestionId(null);
+        return true;
+      }
+      if (selectedSetId) {
+        setSelectedSetId(null);
+        return true;
+      }
+      if (router.canGoBack()) {
+        router.back();
+        return true;
+      }
+      return false;
+    });
+    return () => subscription.remove();
+  }, [selectedQuestionId, selectedSetId]);
+
+  useFocusEffect(useCallback(() => {
     let active = true;
     const loadNotes = async () => {
       if (!user || !supabase) {
@@ -105,14 +137,15 @@ export function SqlPracticedNotes() {
           const [attemptsResult, messagesResult] = await Promise.all([
             supabase
               .from('practice_attempts')
-              .select('question_id,sql,created_at')
+              .select('id,question_id,sql,execution_result,created_at')
               .in('question_id', questionIds)
               .order('created_at', { ascending: false }),
             supabase
               .from('practice_evaluator_messages')
               .select('*')
               .in('question_id', questionIds)
-              .order('created_at', { ascending: true }),
+              .order('created_at', { ascending: true })
+              .order('id', { ascending: true }),
           ]);
           if (attemptsResult.error) {
             throw attemptsResult.error;
@@ -148,7 +181,7 @@ export function SqlPracticedNotes() {
     return () => {
       active = false;
     };
-  }, [user]);
+  }, [user]));
 
   const categoryOptions = useMemo<FilterOption[]>(
     () => [
@@ -167,18 +200,32 @@ export function SqlPracticedNotes() {
         : sqlLearningCategories.filter((category) => category.id === categoryId);
     const uniqueTopics = new Map<string, string>();
     categories.forEach((category) =>
-      category.modules.forEach((module) =>
-        module.topics.forEach((topic) => uniqueTopics.set(topic.id, topic.title)),
-      ),
+      category.topics.forEach((topic) => uniqueTopics.set(topic.id, topic.title)),
     );
     return [
       { label: 'All Topics', value: 'all' },
       ...Array.from(uniqueTopics, ([value, label]) => ({ value, label })),
     ];
   }, [categoryId]);
+  const subtopicOptions = useMemo<FilterOption[]>(() => {
+    const categories =
+      categoryId === 'all'
+        ? sqlLearningCategories
+        : sqlLearningCategories.filter((category) => category.id === categoryId);
+    const topics = categories.flatMap((category) => category.topics)
+      .filter((topic) => topicId === 'all' || topic.id === topicId);
+    const uniqueSubtopics = new Map<string, string>();
+    topics.forEach((topic) =>
+      topic.subtopics.forEach((subtopic) => uniqueSubtopics.set(subtopic.id, subtopic.title)),
+    );
+    return [
+      { label: 'All Subtopics', value: 'all' },
+      ...Array.from(uniqueSubtopics, ([value, label]) => ({ value, label })),
+    ];
+  }, [categoryId, topicId]);
   const filteredSets = useMemo(
-    () => filterPracticedSets(data.sets, categoryId, topicId),
-    [categoryId, data.sets, topicId],
+    () => filterPracticedSets(data.sets, categoryId, topicId, subtopicId),
+    [categoryId, data.sets, subtopicId, topicId],
   );
   const selectedSet = data.sets.find((set) => set.id === selectedSetId) ?? null;
   const selectedQuestion =
@@ -186,20 +233,59 @@ export function SqlPracticedNotes() {
   const review = selectedQuestion
     ? getPracticeQuestionReview(
         selectedQuestion,
-        data.attempts.filter((attempt) => attempt.question_id === selectedQuestion.id),
-        data.messages.filter((message) => message.question_id === selectedQuestion.id),
+      data.attempts,
+      data.messages,
       )
     : null;
+
+  const deleteSelectedSet = async () => {
+      if (!selectedSet || !user || !supabase) {
+        setDeleteError('Sign in before deleting a practiced set.');
+        return;
+      }
+      setDeletingSet(true);
+      setDeleteError('');
+      try {
+        const { error: removeError } = await supabase
+          .from('practice_sets')
+          .delete()
+          .eq('id', selectedSet.id)
+          .eq('user_id', user.id);
+        if (removeError) {
+          throw removeError;
+        }
+        setData((current) => ({
+          ...current,
+          sets: current.sets.filter((set) => set.id !== selectedSet.id),
+          attempts: current.attempts.filter((attempt) =>
+            !selectedSet.questions.some((question) => question.id === attempt.question_id),
+          ),
+          messages: current.messages.filter((message) =>
+            !selectedSet.questions.some((question) => question.id === message.question_id),
+          ),
+        }));
+        setSelectedQuestionId(null);
+        setSelectedSetId(null);
+        setDeleteConfirmation(false);
+      } catch (removeError) {
+        setDeleteError(
+          removeError instanceof Error ? removeError.message : 'The practiced set could not be deleted.',
+        );
+      } finally {
+        setDeletingSet(false);
+      }
+  };
 
   if (selectedQuestion && selectedSet && review) {
     const category = findCategory(selectedSet.config.categoryId);
     const topic = findTopic(selectedSet.config.topicId);
+    const subtopic = findSubtopic(selectedSet.config.topicId, selectedSet.config.subtopicId);
     return (
       <View style={styles.screen}>
         <DrilldownBackButton label="Back to questions" onPress={() => setSelectedQuestionId(null)} />
         <SectionHeader
           title={`Question ${selectedQuestion.position + 1}`}
-          subtitle={`${category} · ${topic} · Set ${selectedSet.set_number}`}
+          subtitle={`${category} · ${topic} · ${subtopic} · Set ${selectedSet.set_number}`}
         />
         <Card style={styles.detailCard}>
           <Text style={[styles.sectionTitle, { color: colors.primaryText }]}>Question</Text>
@@ -258,6 +344,7 @@ export function SqlPracticedNotes() {
   if (selectedSet) {
     const category = findCategory(selectedSet.config.categoryId);
     const topic = findTopic(selectedSet.config.topicId);
+    const subtopic = findSubtopic(selectedSet.config.topicId, selectedSet.config.subtopicId);
     return (
       <View style={styles.screen}>
         <DrilldownBackButton
@@ -265,9 +352,44 @@ export function SqlPracticedNotes() {
           onPress={() => setSelectedSetId(null)}
         />
         <SectionHeader
-          title={`${category} · ${topic}`}
+          title={`${category} · ${topic} · ${subtopic}`}
           subtitle={`Practice Set ${selectedSet.set_number} · ${selectedSet.config.difficulty}`}
         />
+        {deleteError ? (
+          <Text accessibilityRole="alert" style={[styles.error, { color: colors.danger }]}>
+            {deleteError}
+          </Text>
+        ) : null}
+        {!deleteConfirmation ? (
+          <Button
+            variant="secondary"
+            onPress={() => {
+              setDeleteError('');
+              setDeleteConfirmation(true);
+            }}>
+            Delete this set
+          </Button>
+        ) : (
+          <Card style={styles.detailCard}>
+            <Text style={[styles.cardTitle, { color: colors.primaryText }]}>
+              Delete Practice Set {selectedSet.set_number}?
+            </Text>
+            <Text style={[styles.cardSubtitle, { color: colors.secondaryText }]}>
+              This permanently removes only this set and its saved questions, attempts, and evaluator messages.
+            </Text>
+            <View style={styles.deleteActions}>
+              <Button disabled={deletingSet} variant="secondary" onPress={() => setDeleteConfirmation(false)}>
+                Cancel
+              </Button>
+              <Button
+                disabled={deletingSet}
+                onPress={() => void deleteSelectedSet()}
+                style={{ backgroundColor: colors.danger }}>
+                {deletingSet ? 'Deleting…' : 'Confirm delete'}
+              </Button>
+            </View>
+          </Card>
+        )}
         <View style={styles.questionList}>
           {selectedSet.questions.map((question) => (
             <Pressable
@@ -309,13 +431,23 @@ export function SqlPracticedNotes() {
           onChange={(value) => {
             setCategoryId(value);
             setTopicId('all');
+            setSubtopicId('all');
           }}
         />
         <FilterField
           label="Topic"
           value={topicId}
           options={topicOptions}
-          onChange={setTopicId}
+          onChange={(value) => {
+            setTopicId(value);
+            setSubtopicId('all');
+          }}
+        />
+        <FilterField
+          label="Subtopic"
+          value={subtopicId}
+          options={subtopicOptions}
+          onChange={setSubtopicId}
         />
       </View>
       {loading ? <ActivityIndicator color={colors.primary} /> : null}
@@ -349,7 +481,8 @@ export function SqlPracticedNotes() {
               ]}>
               <View style={styles.cardCopy}>
                 <Text style={[styles.cardTitle, { color: colors.primaryText }]}>
-                  {findCategory(set.config.categoryId)} · {findTopic(set.config.topicId)}
+                  {findCategory(set.config.categoryId)} · {findTopic(set.config.topicId)} ·{' '}
+                  {findSubtopic(set.config.topicId, set.config.subtopicId)}
                 </Text>
                 <Text style={[styles.cardSubtitle, { color: colors.secondaryText }]}>
                   Practice Set {set.set_number} · {set.questions.length} questions ·{' '}
@@ -484,14 +617,23 @@ function findCategory(id: string) {
 
 function findTopic(id: string) {
   for (const category of sqlLearningCategories) {
-    for (const module of category.modules) {
-      const topic = module.topics.find((item) => item.id === id);
-      if (topic) {
-        return topic.title;
-      }
+    const topic = category.topics.find((item) => item.id === id);
+    if (topic) {
+      return topic.title;
     }
   }
   return id;
+}
+
+function findSubtopic(topicId: string, subtopicId: string) {
+  for (const category of sqlLearningCategories) {
+    const topic = category.topics.find((item) => item.id === topicId);
+    const subtopic = topic?.subtopics.find((item) => item.id === subtopicId);
+    if (subtopic) {
+      return subtopic.title;
+    }
+  }
+  return subtopicId;
 }
 
 function getErrorMessage(error: unknown, fallback: string) {
@@ -660,6 +802,12 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   questionList: {
+    gap: 10,
+  },
+  deleteActions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'flex-end',
     gap: 10,
   },
   questionCard: {

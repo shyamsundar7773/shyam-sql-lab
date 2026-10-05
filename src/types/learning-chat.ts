@@ -19,7 +19,7 @@ export type LearningConversation = {
   id: string;
   user_id: string;
   category_id: string;
-  module_id: string;
+  module_id: string | null;
   topic_id: string;
   lesson_content: TopicLesson;
   created_at: string;

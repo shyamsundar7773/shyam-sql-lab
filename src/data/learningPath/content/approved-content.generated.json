@@ -1,0 +1,173 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "category": "SQL Foundations",
+      "categoryId": "sql-foundations",
+      "topic": "SELECT Statements",
+      "topicId": "select-statements",
+      "subtopic": "Selecting Columns",
+      "subtopicId": "selecting-columns",
+      "content": {
+        "explanation": [
+          "A SELECT statement defines which columns should appear in a SQL query result. You can select one column or several columns from a table."
+        ],
+        "examples": [
+          {
+            "title": "Example 1",
+            "explanation": "",
+            "code": "SELECT employee_name\nFROM employees;"
+          },
+          {
+            "title": "Example 2",
+            "explanation": "",
+            "code": "SELECT employee_name, department_id\nFROM employees;"
+          }
+        ],
+        "keyPoints": [
+          "SELECT defines the columns returned by a query.",
+          "Multiple columns can be selected.",
+          "The order of columns in SELECT controls the result-column order.",
+          "SELECT does not modify the source table."
+        ],
+        "commonMistakes": [
+          "Selecting a column that does not exist.",
+          "Using the wrong column name.",
+          "Selecting unnecessary columns."
+        ],
+        "interviewQuestions": [
+          "SELECT is a fundamental SQL interview topic and tests whether a candidate understands how query output is constructed."
+        ],
+        "practiceQuestions": [
+          "Practice selecting one column, multiple columns, and different column combinations from an employee table."
+        ]
+      }
+    },
+    {
+      "category": "SQL Foundations",
+      "categoryId": "sql-foundations",
+      "topic": "SELECT Statements",
+      "topicId": "select-statements",
+      "subtopic": "Filtering Rows",
+      "subtopicId": "filtering-rows",
+      "content": {
+        "explanation": [
+          "The WHERE clause filters rows before they appear in the query result. It allows SQL to return only records that satisfy a condition."
+        ],
+        "examples": [
+          {
+            "title": "Example 1",
+            "explanation": "",
+            "code": "SELECT employee_name\nFROM employees\nWHERE department_id = 10;"
+          },
+          {
+            "title": "Example 2",
+            "explanation": "",
+            "code": "SELECT employee_name, salary\nFROM employees\nWHERE salary > 50000;"
+          }
+        ],
+        "keyPoints": [
+          "WHERE filters source rows.",
+          "Conditions determine which rows are returned.",
+          "WHERE can be used together with SELECT.",
+          "Filtering and column selection solve different problems."
+        ],
+        "commonMistakes": [
+          "Forgetting WHERE when filtering is required.",
+          "Using the wrong comparison operator.",
+          "Confusing row filtering with column selection."
+        ],
+        "interviewQuestions": [
+          "WHERE is a fundamental SQL interview topic and tests practical understanding of row filtering."
+        ],
+        "practiceQuestions": [
+          "Practice filtering employees by department, salary, status, and other column values."
+        ]
+      }
+    },
+    {
+      "category": "Data Querying",
+      "categoryId": "data-querying",
+      "topic": "Aggregations",
+      "topicId": "aggregations",
+      "subtopic": "Counting Data",
+      "subtopicId": "count-data",
+      "content": {
+        "explanation": [
+          "The COUNT aggregate function summarizes rows or values by returning a count."
+        ],
+        "examples": [
+          {
+            "title": "Example 1",
+            "explanation": "",
+            "code": "SELECT COUNT(*)\nFROM employees;"
+          },
+          {
+            "title": "Example 2",
+            "explanation": "",
+            "code": "SELECT COUNT(department_id)\nFROM employees;"
+          }
+        ],
+        "keyPoints": [
+          "COUNT(*) counts rows.",
+          "COUNT(column) counts non-null values in that column.",
+          "COUNT is commonly used for reporting.",
+          "Aggregate functions summarize data."
+        ],
+        "commonMistakes": [
+          "Assuming COUNT(*) and COUNT(column) always return the same result.",
+          "Forgetting the effect of NULL values.",
+          "Using COUNT when another aggregate is required."
+        ],
+        "interviewQuestions": [
+          "COUNT is a common SQL interview topic because it tests understanding of aggregation and NULL behavior."
+        ],
+        "practiceQuestions": [
+          "Practice counting employees, departments, and non-null column values."
+        ]
+      }
+    },
+    {
+      "category": "Data Querying",
+      "categoryId": "data-querying",
+      "topic": "Aggregations",
+      "topicId": "aggregations",
+      "subtopic": "GROUP BY Basics",
+      "subtopicId": "group-by-basics",
+      "content": {
+        "explanation": [
+          "GROUP BY divides rows into groups based on one or more columns so aggregate functions can calculate results for each group."
+        ],
+        "examples": [
+          {
+            "title": "Example 1",
+            "explanation": "",
+            "code": "SELECT department_id, COUNT(*)\nFROM employees\nGROUP BY department_id;"
+          },
+          {
+            "title": "Example 2",
+            "explanation": "",
+            "code": "SELECT department_id, SUM(salary)\nFROM employees\nGROUP BY department_id;"
+          }
+        ],
+        "keyPoints": [
+          "GROUP BY creates groups based on column values.",
+          "Aggregate functions can calculate a result for each group.",
+          "GROUP BY is commonly used for reporting.",
+          "Grouping should match the intended business question."
+        ],
+        "commonMistakes": [
+          "Grouping by the wrong column.",
+          "Forgetting GROUP BY when grouped results are required.",
+          "Selecting incompatible non-grouped columns."
+        ],
+        "interviewQuestions": [
+          "GROUP BY is a common SQL interview topic and tests practical aggregation and reporting skills."
+        ],
+        "practiceQuestions": [
+          "Practice calculating employee counts and salary totals for each department."
+        ]
+      }
+    }
+  ]
+}

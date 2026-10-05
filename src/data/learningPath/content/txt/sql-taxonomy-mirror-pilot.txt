@@ -1,0 +1,149 @@
+COURSE: Shyam SQL Lab Category Topic Subtopic Mirror Pilot
+
+=== LESSON ===
+LESSON: Selecting Columns
+CATEGORY: SQL Foundations
+CATEGORY_ID: sql-foundations
+TOPIC: SELECT Statements
+TOPIC_ID: select-statements
+SUBTOPIC: Selecting Columns
+SUBTOPIC_ID: selecting-columns
+
+Explanation:
+A SELECT statement defines which columns should appear in a SQL query result. You can select one column or several columns from a table.
+
+Examples:
+SELECT employee_name
+FROM employees;
+
+SELECT employee_name, department_id
+FROM employees;
+
+Key Points:
+- SELECT defines the columns returned by a query.
+- Multiple columns can be selected.
+- The order of columns in SELECT controls the result-column order.
+- SELECT does not modify the source table.
+
+Common Mistakes:
+- Selecting a column that does not exist.
+- Using the wrong column name.
+- Selecting unnecessary columns.
+
+Interview Relevance:
+SELECT is a fundamental SQL interview topic and tests whether a candidate understands how query output is constructed.
+
+Practice Guidance:
+Practice selecting one column, multiple columns, and different column combinations from an employee table.
+
+=== LESSON ===
+LESSON: Filtering Rows
+CATEGORY: SQL Foundations
+CATEGORY_ID: sql-foundations
+TOPIC: SELECT Statements
+TOPIC_ID: select-statements
+SUBTOPIC: Filtering Rows
+SUBTOPIC_ID: filtering-rows
+
+Explanation:
+The WHERE clause filters rows before they appear in the query result. It allows SQL to return only records that satisfy a condition.
+
+Examples:
+SELECT employee_name
+FROM employees
+WHERE department_id = 10;
+
+SELECT employee_name, salary
+FROM employees
+WHERE salary > 50000;
+
+Key Points:
+- WHERE filters source rows.
+- Conditions determine which rows are returned.
+- WHERE can be used together with SELECT.
+- Filtering and column selection solve different problems.
+
+Common Mistakes:
+- Forgetting WHERE when filtering is required.
+- Using the wrong comparison operator.
+- Confusing row filtering with column selection.
+
+Interview Relevance:
+WHERE is a fundamental SQL interview topic and tests practical understanding of row filtering.
+
+Practice Guidance:
+Practice filtering employees by department, salary, status, and other column values.
+
+=== LESSON ===
+LESSON: Counting Data
+CATEGORY: Data Querying
+CATEGORY_ID: data-querying
+TOPIC: Aggregations
+TOPIC_ID: aggregations
+SUBTOPIC: Counting Data
+SUBTOPIC_ID: count-data
+
+Explanation:
+The COUNT aggregate function summarizes rows or values by returning a count.
+
+Examples:
+SELECT COUNT(*)
+FROM employees;
+
+SELECT COUNT(department_id)
+FROM employees;
+
+Key Points:
+- COUNT(*) counts rows.
+- COUNT(column) counts non-null values in that column.
+- COUNT is commonly used for reporting.
+- Aggregate functions summarize data.
+
+Common Mistakes:
+- Assuming COUNT(*) and COUNT(column) always return the same result.
+- Forgetting the effect of NULL values.
+- Using COUNT when another aggregate is required.
+
+Interview Relevance:
+COUNT is a common SQL interview topic because it tests understanding of aggregation and NULL behavior.
+
+Practice Guidance:
+Practice counting employees, departments, and non-null column values.
+
+=== LESSON ===
+LESSON: Grouping Data
+CATEGORY: Data Querying
+CATEGORY_ID: data-querying
+TOPIC: Aggregations
+TOPIC_ID: aggregations
+SUBTOPIC: GROUP BY Basics
+SUBTOPIC_ID: group-by-basics
+
+Explanation:
+GROUP BY divides rows into groups based on one or more columns so aggregate functions can calculate results for each group.
+
+Examples:
+SELECT department_id, COUNT(*)
+FROM employees
+GROUP BY department_id;
+
+SELECT department_id, SUM(salary)
+FROM employees
+GROUP BY department_id;
+
+Key Points:
+- GROUP BY creates groups based on column values.
+- Aggregate functions can calculate a result for each group.
+- GROUP BY is commonly used for reporting.
+- Grouping should match the intended business question.
+
+Common Mistakes:
+- Grouping by the wrong column.
+- Forgetting GROUP BY when grouped results are required.
+- Selecting incompatible non-grouped columns.
+
+Interview Relevance:
+GROUP BY is a common SQL interview topic and tests practical aggregation and reporting skills.
+
+Practice Guidance:
+Practice calculating employee counts and salary totals for each department.

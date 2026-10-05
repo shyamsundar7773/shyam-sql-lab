@@ -5,6 +5,24 @@ import type {
   SqlPracticeExecutionResult,
   SqlPracticeQuestionType,
 } from '@/types/sql-practice';
+import {
+  getPracticeEvaluatorLegacyRequestContext,
+  type PracticeEvaluatorExecution,
+} from '@/lib/sql-practice-notes';
+import { getSubtopicContext } from '@/lib/learning-content';
+
+const practiceDifficulties = new Set<SqlPracticeDifficulty>([
+  'Beginner',
+  'Intermediate',
+  'Advanced',
+]);
+const practiceQuestionTypes = new Set<SqlPracticeQuestionType>([
+  'SELECT',
+  'WHERE',
+  'JOIN',
+  'GROUP BY',
+  'AGGREGATION',
+]);
 
 export type ApiHealth = {
   status: 'ok';
@@ -18,8 +36,10 @@ export type TopicChatHistoryItem = {
 
 export type TopicChatRequest = {
   accessToken: string;
+  categoryId: string;
+  topicId: string;
+  subtopicId: string;
   category: string;
-  module: string;
   topic: string;
   officialContent: string;
   history: TopicChatHistoryItem[];
@@ -33,8 +53,10 @@ export type TopicChatResponse = {
 
 export type PracticeGenerationOptions = {
   accessToken: string;
+  categoryId: string;
+  topicId: string;
+  subtopicId: string;
   category: string;
-  module: string;
   topic: string;
   subtopic: string;
   difficulty: SqlPracticeDifficulty;
@@ -50,12 +72,14 @@ export type PracticeChatMessage = {
 
 export type PracticeLearningContext = {
   category: string;
-  module: string;
   topic: string;
   subtopic: string;
+  categoryId: string;
+  topicId: string;
+  subtopicId: string;
 };
 
-async function requestPracticeApi<T>(
+async function requestApi<T>(
   endpoint: string,
   accessToken: string,
   body: Record<string, unknown>,
@@ -64,33 +88,101 @@ async function requestPracticeApi<T>(
     throw new Error('The SQL practice API is not configured. Set EXPO_PUBLIC_API_URL.');
   }
 
-  const response = await fetch(`${clientEnv.apiUrl.replace(/\/+$/, '')}${endpoint}`, {
-    method: 'POST',
-    headers: {
-      Accept: 'application/json',
+  const requestUrl = `${clientEnv.apiUrl.replace(/\/+$/, '')}${endpoint}`;
+  let response: Response;
+  try {
+    response = await fetch(requestUrl, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
       Authorization: `Bearer ${accessToken}`,
       'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
+      },
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    throw error;
+  }
   const result: unknown = await response.json().catch(() => null);
+  const serverError = response.ok
+    ? null
+    : getApiError(result, `The API request failed with HTTP ${response.status}.`);
+  if (process.env.NODE_ENV === 'development' && endpoint === '/api/practice/generate') {
+    console.info('[SQL Practice API diagnostic]', {
+      endpoint,
+      host: getApiHost(requestUrl),
+      status: response.status,
+      categoryId: body.categoryId,
+      topicId: body.topicId,
+      subtopicId: body.subtopicId,
+      difficulty: body.difficulty,
+      questionType: body.questionType,
+      count: body.count,
+      validationError: serverError?.slice(0, 200),
+    });
+  }
   if (!response.ok) {
-    throw new Error(getApiError(result, `SQL practice request failed with HTTP ${response.status}.`));
+    if (
+      endpoint === '/api/practice/generate' &&
+      serverError &&
+      /valid category,\s*module,\s*topic,\s*subtopic/i.test(serverError)
+    ) {
+      throw new Error(
+        'The configured SQL practice API still requires the legacy Module-based request. Update the API service to the canonical Category/Topic/Subtopic contract.',
+      );
+    }
+    throw new Error(serverError ?? `The API request failed with HTTP ${response.status}.`);
   }
   return result as T;
+}
+
+function getApiHost(value: string) {
+  try {
+    return new URL(value).host;
+  } catch {
+    return 'invalid-api-url';
+  }
 }
 
 export async function generatePracticeQuestions(
   options: PracticeGenerationOptions,
 ): Promise<PracticeQuestionContent[]> {
-  const result = await requestPracticeApi<{ questions: unknown }>(
+  const context = getSubtopicContext(
+    options.categoryId,
+    options.topicId,
+    options.subtopicId,
+  );
+  if (
+    !context ||
+    context.category.title !== options.category ||
+    context.topic.title !== options.topic ||
+    context.subtopic.title !== options.subtopic
+  ) {
+    throw new Error('Choose a valid canonical Category, Topic, and Subtopic before generating questions.');
+  }
+  if (
+    !options.accessToken.trim() ||
+    !practiceDifficulties.has(options.difficulty) ||
+    !practiceQuestionTypes.has(options.questionType) ||
+    !Number.isInteger(options.count) ||
+    options.count < 1 ||
+    options.count > 10 ||
+    !options.learningContext.trim() ||
+    options.learningContext.length > 25_000
+  ) {
+    throw new Error('Choose a valid difficulty, question type, and question count from 1 to 10.');
+  }
+
+  const result = await requestApi<{ questions: unknown }>(
     '/api/practice/generate',
     options.accessToken,
     {
-      category: options.category,
-      module: options.module,
-      topic: options.topic,
-      subtopic: options.subtopic,
+      categoryId: options.categoryId,
+      topicId: options.topicId,
+      subtopicId: options.subtopicId,
+      category: context.category.title,
+      topic: context.topic.title,
+      subtopic: context.subtopic.title,
       difficulty: options.difficulty,
       questionType: options.questionType,
       count: options.count,
@@ -108,7 +200,7 @@ export async function runPracticeSql(
   question: PracticeQuestionContent,
   sql: string,
 ): Promise<SqlPracticeExecutionResult> {
-  const result = await requestPracticeApi<unknown>('/api/practice/execute', accessToken, {
+  const result = await requestApi<unknown>('/api/practice/execute', accessToken, {
     question,
     sql,
   });
@@ -130,19 +222,26 @@ export async function askPracticeEvaluator(options: {
   accessToken: string;
   context: PracticeLearningContext;
   question: PracticeQuestionContent;
-  sql: string;
-  result: SqlPracticeExecutionResult | null;
+  draftSql: string;
+  execution: PracticeEvaluatorExecution;
   history: PracticeChatMessage[];
   message: string;
 }): Promise<string> {
-  const result = await requestPracticeApi<{ reply: unknown }>(
+  const result = await requestApi<{ reply: unknown }>(
     '/api/practice/evaluate',
     options.accessToken,
     {
       context: options.context,
       question: options.question,
-      sql: options.sql,
-      result: options.result,
+      draftSql: options.draftSql,
+      execution: options.execution.status === 'not_executed'
+        ? options.execution
+        : {
+            status: options.execution.status,
+            sql: options.execution.sql,
+            result: options.execution.result,
+          },
+      ...getPracticeEvaluatorLegacyRequestContext(options.execution),
       history: options.history,
       message: options.message,
     },
@@ -205,8 +304,10 @@ export async function checkApiHealth(): Promise<ApiHealth> {
 
 export async function askTopicQuestion({
   accessToken,
+  categoryId,
+  topicId,
+  subtopicId,
   category,
-  module,
   topic,
   officialContent,
   history,
@@ -214,6 +315,14 @@ export async function askTopicQuestion({
 }: TopicChatRequest): Promise<TopicChatResponse> {
   if (!clientEnv.apiUrl) {
     throw new Error('The learning chat API is not configured. Set EXPO_PUBLIC_API_URL.');
+  }
+  const context = getSubtopicContext(categoryId, topicId, subtopicId);
+  if (
+    !context ||
+    context.category.title !== category ||
+    context.topic.title !== topic
+  ) {
+    throw new Error('Choose a valid canonical Category, Topic, and Subtopic before asking a learning question.');
   }
 
   const baseUrl = clientEnv.apiUrl.replace(/\/+$/, '');
@@ -225,9 +334,11 @@ export async function askTopicQuestion({
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      category,
-      module,
-      topic,
+      categoryId,
+      topicId,
+      subtopicId,
+      category: context.category.title,
+      topic: context.topic.title,
       officialContent,
       history,
       question,
@@ -235,15 +346,38 @@ export async function askTopicQuestion({
   });
 
   const result: unknown = await response.json().catch(() => null);
+  const responseError =
+    typeof result === 'object' &&
+    result !== null &&
+    'error' in result &&
+    typeof result.error === 'string'
+      ? result.error
+      : null;
+  if (process.env.NODE_ENV === 'development') {
+    console.info('[Topic Chat API diagnostic]', {
+      endpoint: '/api/learning-chat',
+      host: getApiHost(baseUrl),
+      categoryId,
+      topicId,
+      subtopicId,
+      conversationReady: true,
+      messagePresent: Boolean(question.trim()),
+      lessonPresent: Boolean(officialContent.trim()),
+      historyCount: history.length,
+      status: response.status,
+      validationError: responseError?.slice(0, 200) ?? undefined,
+    });
+  }
   if (!response.ok) {
-    const message =
-      typeof result === 'object' &&
-      result !== null &&
-      'error' in result &&
-      typeof result.error === 'string'
-        ? result.error
-        : `Learning chat request failed with HTTP ${response.status}.`;
-    throw new Error(message);
+    if (
+      responseError &&
+      /topic,\s*lesson,\s*history,\s*and\s*questions?\s+are\s+required/i.test(responseError)
+    ) {
+      throw new Error(
+        'The configured Topic Chat API rejected the canonical Category/Topic/Subtopic request. Its deployed request contract is likely outdated; update the API service before retrying.',
+      );
+    }
+    throw new Error(responseError ?? `Learning chat request failed with HTTP ${response.status}.`);
   }
 
   if (

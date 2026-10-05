@@ -66,16 +66,34 @@ test("learning chat validates the expected request fields", async () => {
 });
 
 test("learning chat rejects requests without authentication", async () => {
+  const invalidPath = await fetch(`${baseUrl}/api/learning-chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      categoryId: "sql-foundations",
+      topicId: "select-statements",
+      subtopicId: "group-by-basics",
+      category: "SQL Foundations",
+      topic: "SELECT Statements",
+      officialContent: '{"explanation":["Selecting columns."]}',
+      history: [],
+      question: "Explain SELECT.",
+    }),
+  });
+  assert.equal(invalidPath.status, 400);
+
   const response = await fetch(`${baseUrl}/api/learning-chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      category: "SQL",
-      module: "SQL Fundamentals",
-      topic: "INNER JOIN",
+      categoryId: "sql-foundations",
+      topicId: "select-statements",
+      subtopicId: "selecting-columns",
+      category: "SQL Foundations",
+      topic: "SELECT Statements",
       officialContent: '{"explanation":["Matching keys return rows."]}',
       history: [],
-      question: "Explain INNER JOIN.",
+      question: "Explain SELECT Statements.",
     }),
   });
 
@@ -85,15 +103,95 @@ test("learning chat rejects requests without authentication", async () => {
   });
 });
 
+test("Topic Chat accepts a normal subtopic-grounded follow-up without practice questions", async () => {
+  const originalFetch = globalThis.fetch;
+  const previousEnvironment = {
+    supabaseUrl: process.env.SUPABASE_URL,
+    supabaseKey: process.env.SUPABASE_PUBLISHABLE_KEY,
+    groqKey: process.env.GROQ_API_KEY,
+  };
+  const groqRequests: Array<{ messages: Array<{ role: string; content: string }> }> = [];
+  process.env.SUPABASE_URL = "https://supabase.test";
+  process.env.SUPABASE_PUBLISHABLE_KEY = "test-publishable-key";
+  process.env.GROQ_API_KEY = "test-groq-key";
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url.startsWith(baseUrl)) {
+      return originalFetch(input, init);
+    }
+    if (url.endsWith("/auth/v1/user")) {
+      return new Response(JSON.stringify({ id: "test-user" }), { status: 200 });
+    }
+    if (url === "https://api.groq.com/openai/v1/chat/completions") {
+      groqRequests.push(
+        JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> },
+      );
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: "Hi! What would you like to learn?" } }] }),
+        { status: 200 },
+      );
+    }
+    throw new Error(`Unexpected outbound request: ${url}`);
+  };
+
+  try {
+    const response = await fetch(`${baseUrl}/api/learning-chat`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-access-token",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        categoryId: "sql-foundations",
+        topicId: "select-statements",
+        subtopicId: "selecting-columns",
+        category: "SQL Foundations",
+        topic: "SELECT Statements",
+        officialContent: JSON.stringify({
+          canonicalPath: {
+            categoryId: "sql-foundations",
+            topicId: "select-statements",
+            subtopicId: "selecting-columns",
+          },
+          officialLesson: {
+            title: "Selecting Columns",
+            explanation: ["SELECT chooses output columns."],
+            examples: [],
+          },
+        }),
+        history: [],
+        question: "hi",
+      }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      reply: "Hi! What would you like to learn?",
+      mode: "ai",
+    });
+    assert.equal(groqRequests.length, 1);
+    assert.match(groqRequests[0].messages[0].content, /category_id=sql-foundations/);
+    assert.match(groqRequests[0].messages[0].content, /topic_id=select-statements/);
+    assert.match(groqRequests[0].messages[0].content, /subtopic_id=selecting-columns/);
+    assert.equal(groqRequests[0].messages.at(-1)?.content, "hi");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousEnvironment.supabaseUrl === undefined) delete process.env.SUPABASE_URL;
+    else process.env.SUPABASE_URL = previousEnvironment.supabaseUrl;
+    if (previousEnvironment.supabaseKey === undefined) delete process.env.SUPABASE_PUBLISHABLE_KEY;
+    else process.env.SUPABASE_PUBLISHABLE_KEY = previousEnvironment.supabaseKey;
+    if (previousEnvironment.groqKey === undefined) delete process.env.GROQ_API_KEY;
+    else process.env.GROQ_API_KEY = previousEnvironment.groqKey;
+  }
+});
+
 test("SQL practice generation rejects unauthenticated requests before contacting AI", async () => {
   const response = await fetch(`${baseUrl}/api/practice/generate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      category: "SQL Foundations",
-      module: "Query Basics",
-      topic: "SELECT",
-      subtopic: "Columns",
+      categoryId: "sql-foundations",
+      topicId: "select-statements",
+      subtopicId: "selecting-columns",
       difficulty: "Beginner",
       questionType: "SELECT",
       count: 1,
@@ -178,13 +276,13 @@ test("Notes organizer preserves taxonomy, budgets batches, and handles provider 
     categoryId: "sql-foundations",
     categoryName: "SQL Foundations",
     categoryIsNew: false,
-    moduleId: "query-basics",
-    moduleName: "Query Basics",
+    moduleId: "sql-foundations",
+    moduleName: "SQL Foundations",
     moduleIsNew: false,
-    topicId: "query-structure",
-    topicName: "The shape of a SQL query",
+    topicId: "select-statements",
+    topicName: "SELECT Statements",
     topicIsNew: false,
-    subtopicId: "select-list",
+    subtopicId: "selecting-columns",
     needsChanges: false,
     reason: "This chunk explains the SELECT list.",
   };
@@ -311,8 +409,8 @@ test("Notes organizer preserves taxonomy, budgets batches, and handles provider 
           categoryName: "SQL Foundations",
           categoryIsNew: true,
           moduleId: null,
-          moduleName: "Query Basics",
-          moduleIsNew: true,
+          moduleName: "SQL Foundations",
+          moduleIsNew: false,
           topicId: null,
           topicName: "Filtering returned rows",
           topicIsNew: true,
@@ -389,8 +487,8 @@ test("Notes organizer preserves taxonomy, budgets batches, and handles provider 
           categoryId: "sql-foundations",
           categoryName: "SQL Foundations",
           categoryIsNew: false,
-          moduleId: "query-basics",
-          moduleName: "Query Basics",
+          moduleId: "sql-foundations",
+          moduleName: "SQL Foundations",
           moduleIsNew: false,
           topicId: null,
           topicName: "Filtering returned rows",
@@ -715,14 +813,29 @@ test("authenticated SQL practice routes generate, execute, and evaluate without 
 
   try {
     const authorization = { Authorization: "Bearer test-session" };
+    const invalidPath = await fetch(`${baseUrl}/api/practice/generate`, {
+      method: "POST",
+      headers: { ...authorization, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        categoryId: "sql-foundations",
+        topicId: "aggregations",
+        subtopicId: "group-by-basics",
+        difficulty: "Beginner",
+        questionType: "SELECT",
+        count: 1,
+        learningContext: "This path has an invalid category/topic relationship.",
+      }),
+    });
+    assert.equal(invalidPath.status, 400);
+    assert.equal(providerRequests.length, 0);
+
     const generated = await fetch(`${baseUrl}/api/practice/generate`, {
       method: "POST",
       headers: { ...authorization, "Content-Type": "application/json" },
       body: JSON.stringify({
-        category: "SQL Foundations",
-        module: "Query Basics",
-        topic: "WHERE",
-        subtopic: "Filtering rows",
+        categoryId: "sql-foundations",
+        topicId: "select-statements",
+        subtopicId: "filtering-rows",
         difficulty: "Beginner",
         questionType: "WHERE",
         count: 1,
@@ -731,6 +844,21 @@ test("authenticated SQL practice routes generate, execute, and evaluate without 
     });
     assert.equal(generated.status, 200);
     assert.deepEqual(await generated.json(), { questions: [question] });
+    assert.deepEqual(
+      JSON.parse(providerRequests[0].messages[1].content),
+      {
+        categoryId: "sql-foundations",
+        topicId: "select-statements",
+        subtopicId: "filtering-rows",
+        category: "SQL Foundations",
+        topic: "SELECT Statements",
+        subtopic: "Filtering Rows",
+        difficulty: "Beginner",
+        questionType: "WHERE",
+        count: 1,
+        learningContext: "Practice filtering rows.",
+      },
+    );
 
     const executed = await fetch(`${baseUrl}/api/practice/execute`, {
       method: "POST",
@@ -754,14 +882,20 @@ test("authenticated SQL practice routes generate, execute, and evaluate without 
       headers: { ...authorization, "Content-Type": "application/json" },
       body: JSON.stringify({
         context: {
+          categoryId: "sql-foundations",
+          topicId: "select-statements",
+          subtopicId: "filtering-rows",
           category: "SQL Foundations",
-          module: "Query Basics",
-          topic: "WHERE",
-          subtopic: "Filtering rows",
+          topic: "SELECT Statements",
+          subtopic: "Filtering Rows",
         },
         question,
-        sql: "SELECT name FROM customers WHERE status = 'active'",
-        result: { ok: true, columns: ["name"], rows: [{ name: "Mina" }] },
+        draftSql: "SELECT name FROM customers WHERE status = 'active'",
+        execution: {
+          status: "succeeded",
+          sql: "SELECT name FROM customers WHERE status = 'active'",
+          result: { ok: true, columns: ["name"], rows: [{ name: "Mina" }] },
+        },
         history: [{ role: "user", content: "Can you explain WHERE?" }],
         message: "Show an alternate approach.",
       }),
@@ -773,16 +907,119 @@ test("authenticated SQL practice routes generate, execute, and evaluate without 
     });
 
     assert.equal(providerRequests.length, 2);
+    assert.match(providerRequests[0].messages[0].content, /sql-foundations/);
+    assert.match(providerRequests[0].messages[0].content, /select-statements/);
+    assert.match(providerRequests[0].messages[0].content, /filtering-rows/);
     assert.match(providerRequests[1].messages[0].content, /Return the active customer names/);
     assert.match(providerRequests[1].messages[0].content, /Category: SQL Foundations/);
-    assert.match(providerRequests[1].messages[0].content, /Module: Query Basics/);
-    assert.match(providerRequests[1].messages[0].content, /Topic: WHERE/);
-    assert.match(providerRequests[1].messages[0].content, /Subtopic: Filtering rows/);
+    assert.match(providerRequests[1].messages[0].content, /Canonical curriculum IDs: category_id=sql-foundations, topic_id=select-statements, subtopic_id=filtering-rows/);
+    assert.match(providerRequests[1].messages[0].content, /Topic: SELECT Statements/);
+    assert.match(providerRequests[1].messages[0].content, /Subtopic: Filtering Rows/);
     assert.match(providerRequests[1].messages[0].content, /Expected correct SQL answer: SELECT name FROM customers WHERE status = 'active'/);
+    assert.match(providerRequests[1].messages[0].content, /The SQL and result below are from a real execution attempt/);
+    assert.match(providerRequests[1].messages[0].content, /"status":"succeeded"/);
     assert.match(providerRequests[1].messages[0].content, /SELECT name FROM customers/);
     assert.match(providerRequests[1].messages[0].content, /"name":"Mina"/);
     assert.equal(providerRequests[1].messages[1].content, "Can you explain WHERE?");
     assert.equal(providerRequests[1].messages[2].content, "Show an alternate approach.");
+
+    const unexecuted = await fetch(`${baseUrl}/api/practice/evaluate`, {
+      method: "POST",
+      headers: { ...authorization, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        context: {
+          categoryId: "sql-foundations",
+          topicId: "select-statements",
+          subtopicId: "filtering-rows",
+          category: "SQL Foundations",
+          topic: "SELECT Statements",
+          subtopic: "Filtering Rows",
+        },
+        question,
+        draftSql: "SELECT name FROM customers",
+        execution: { status: "not_executed" },
+        history: [],
+        message: "Is my query correct?",
+      }),
+    });
+    assert.equal(unexecuted.status, 200);
+    assert.match(
+      providerRequests[2].messages[0].content,
+      /No executed SQL answer exists yet/,
+    );
+    assert.match(
+      providerRequests[2].messages[0].content,
+      /If asked for evaluation, explain that there is no executed answer to evaluate/,
+    );
+    assert.match(
+      providerRequests[2].messages[0].content,
+      /Current SQL editor draft \(not necessarily executed\): SELECT name FROM customers/,
+    );
+    assert.match(
+      providerRequests[2].messages[0].content,
+      /SQL execution context: \{"status":"not_executed"\}/,
+    );
+
+    const failedExecution = await fetch(`${baseUrl}/api/practice/evaluate`, {
+      method: "POST",
+      headers: { ...authorization, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        context: {
+          categoryId: "sql-foundations",
+          topicId: "select-statements",
+          subtopicId: "filtering-rows",
+          category: "SQL Foundations",
+          topic: "SELECT Statements",
+          subtopic: "Filtering Rows",
+        },
+        question,
+        draftSql: "SELECT missing FROM customers",
+        execution: {
+          status: "failed",
+          sql: "SELECT missing FROM customers",
+          result: {
+            ok: false,
+            columns: [],
+            rows: [],
+            error: "no such column: missing",
+          },
+        },
+        history: [],
+        message: "Why did this fail?",
+      }),
+    });
+    assert.equal(failedExecution.status, 200);
+    assert.match(
+      providerRequests[3].messages[0].content,
+      /A failed execution has an actual SQL error/,
+    );
+    assert.match(providerRequests[3].messages[0].content, /no such column: missing/);
+
+    const invalidExecution = await fetch(`${baseUrl}/api/practice/evaluate`, {
+      method: "POST",
+      headers: { ...authorization, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        context: {
+          categoryId: "sql-foundations",
+          topicId: "select-statements",
+          subtopicId: "filtering-rows",
+          category: "SQL Foundations",
+          topic: "SELECT Statements",
+          subtopic: "Filtering Rows",
+        },
+        question,
+        draftSql: "SELECT 1",
+        execution: {
+          status: "succeeded",
+          sql: "SELECT 1",
+          result: { ok: false, columns: [], rows: [], error: "syntax error" },
+        },
+        history: [],
+        message: "Evaluate.",
+      }),
+    });
+    assert.equal(invalidExecution.status, 400);
+    assert.equal(providerRequests.length, 4);
   } finally {
     globalThis.fetch = originalFetch;
     restoreEnvironment("SUPABASE_URL", previousEnvironment.supabaseUrl);

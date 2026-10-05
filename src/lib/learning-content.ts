@@ -1,13 +1,42 @@
 import { sqlLearningCategories } from '@/data/sqlLearningContent';
-import type { Category, Module, Topic } from '@/types/learning-content';
+import type { Category, Subtopic, Topic } from '@/types/learning-content';
 
 export type TopicContext = {
   category: Category;
-  module: Module;
   topic: Topic;
   previousTopic: Topic | null;
   nextTopic: Topic | null;
 };
+
+export type SubtopicContext = {
+  category: Category;
+  topic: Topic;
+  subtopic: Subtopic;
+};
+
+export function canSendTopicMessage(input: {
+  categoryId: string | undefined;
+  topicId: string | undefined;
+  subtopicId: string | undefined;
+  conversationReady: boolean;
+  sessionReady: boolean;
+  loading: boolean;
+  loadError: string;
+  sending: boolean;
+  message: string;
+}) {
+  return Boolean(
+    input.categoryId &&
+      input.topicId &&
+      input.subtopicId &&
+      input.conversationReady &&
+      input.sessionReady &&
+      !input.loading &&
+      !input.loadError &&
+      !input.sending &&
+      input.message.trim(),
+  );
+}
 
 export function getLearningCategories() {
   return sqlLearningCategories;
@@ -17,23 +46,16 @@ export function getCategoryById(categoryId: string | undefined) {
   return sqlLearningCategories.find((category) => category.id === categoryId) ?? null;
 }
 
-export function getModuleById(category: Category | null, moduleId: string | undefined) {
-  return category?.modules.find((module) => module.id === moduleId) ?? null;
-}
-
 export function getLearningOverview() {
   return sqlLearningCategories.map((category) => ({
     category,
-    moduleCount: category.modules.length,
-    topicCount: category.modules.reduce((count, module) => count + module.topics.length, 0),
+    topicCount: category.topics.length,
   }));
 }
 
 export function getTopicContext(topicId: string): TopicContext | null {
   const flattened = sqlLearningCategories.flatMap((category) =>
-    category.modules.flatMap((module) =>
-      module.topics.map((topic) => ({ category, module, topic })),
-    ),
+    category.topics.map((topic) => ({ category, topic })),
   );
   const index = flattened.findIndex(({ topic }) => topic.id === topicId);
   if (index < 0) {
@@ -46,4 +68,15 @@ export function getTopicContext(topicId: string): TopicContext | null {
     previousTopic: flattened[index - 1]?.topic ?? null,
     nextTopic: flattened[index + 1]?.topic ?? null,
   };
+}
+
+export function getSubtopicContext(
+  categoryId: string,
+  topicId: string,
+  subtopicId: string,
+): SubtopicContext | null {
+  const category = getCategoryById(categoryId);
+  const topic = category?.topics.find((item) => item.id === topicId);
+  const subtopic = topic?.subtopics.find((item) => item.id === subtopicId);
+  return category && topic && subtopic ? { category, topic, subtopic } : null;
 }

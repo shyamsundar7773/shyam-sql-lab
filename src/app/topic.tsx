@@ -21,10 +21,10 @@ import { Button, Card, ThemedTextInput } from '@/components/ui/primitives';
 import { useAppShellContentScrollable } from '@/components/app-shell/AppShell';
 import { MarkdownContent } from '@/components/topic-chat/MarkdownContent';
 import { DesignTokens } from '@/constants/theme';
-import { useAppTheme } from '@/contexts/theme-context';
 import { useAuth } from '@/contexts/auth-context';
-import { getTopicContext } from '@/lib/learning-content';
+import { useAppTheme } from '@/contexts/theme-context';
 import { askTopicQuestion } from '@/lib/api';
+import { canSendTopicMessage, getSubtopicContext, getTopicContext } from '@/lib/learning-content';
 import { supabase } from '@/lib/supabase';
 import { createTopicLesson } from '@/lib/topic-lesson';
 import type {
@@ -50,28 +50,39 @@ type LearningPathNoteContext = {
 };
 
 export default function TopicLearningChatScreen() {
-  const { topicId } = useLocalSearchParams<{ topicId: string }>();
+  const { categoryId, topicId, subtopicId } = useLocalSearchParams<{
+    categoryId?: string;
+    topicId: string;
+    subtopicId?: string;
+  }>();
   const context = getTopicContext(topicId);
+  const resolvedCategoryId = categoryId ?? context?.category.id;
+  const resolvedSubtopicId = subtopicId ?? context?.topic.subtopics[0]?.id;
+  const selectedSubtopic =
+    resolvedCategoryId && resolvedSubtopicId
+      ? getSubtopicContext(resolvedCategoryId, topicId, resolvedSubtopicId)?.subtopic ?? null
+      : null;
 
-  if (!context) {
-    return <TopicUnavailable />;
+  if (context && selectedSubtopic && (!categoryId || categoryId === context.category.id)) {
+    return (
+      <TopicConversation
+        key={`${context.category.id}:${context.topic.id}:${selectedSubtopic?.id ?? ''}`}
+        context={context}
+        selectedSubtopic={selectedSubtopic}
+      />
+    );
   }
 
-  return (
-    <TopicConversation
-      key={`${context.category.id}:${context.module.id}:${context.topic.id}`}
-      context={context}
-    />
-  );
+  return <TopicUnavailable />;
 }
 
-function TopicUnavailable() {
+function TopicUnavailable({ message = 'This topic could not be found.' }: { message?: string }) {
   const { colors } = useAppTheme();
   return (
     <View style={styles.unavailable}>
       <Card>
         <Text style={[styles.title, { color: colors.primaryText }]}>
-          This topic could not be found.
+          {message}
         </Text>
         <Button onPress={() => router.push('/learning-path')} style={styles.returnButton}>
           Return to Learning Path
@@ -83,17 +94,22 @@ function TopicUnavailable() {
 
 function TopicConversation({
   context,
+  selectedSubtopic,
 }: {
   context: NonNullable<ReturnType<typeof getTopicContext>>;
+  selectedSubtopic: NonNullable<ReturnType<typeof getSubtopicContext>>['subtopic'];
 }) {
-  const { category, module, topic, previousTopic, nextTopic } = context;
+  const { category, topic, previousTopic, nextTopic } = context;
   const { user, session } = useAuth();
   const userId = user?.id;
   const { colors } = useAppTheme();
   const insets = useSafeAreaInsets();
   const shellContentScrollable = useAppShellContentScrollable();
   const stylesForTheme = useMemo(() => makeStyles(colors), [colors]);
-  const localLesson = useMemo(() => createTopicLesson(topic), [topic]);
+  const localLesson = useMemo(
+    () => createTopicLesson(topic, selectedSubtopic ?? undefined),
+    [selectedSubtopic, topic],
+  );
   const [conversation, setConversation] = useState<LearningConversation | null>(null);
   const [lesson, setLesson] = useState<TopicLesson>(localLesson);
   const [messages, setMessages] = useState<LearningChatMessage[]>([]);
@@ -105,12 +121,22 @@ function TopicConversation({
   const [sendError, setSendError] = useState('');
   const [retryRequest, setRetryRequest] = useState<RetryRequest | null>(null);
   const [sending, setSending] = useState(false);
-  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const sendingRef = useRef(false);
   const [loadAttempt, setLoadAttempt] = useState(0);
   const listRef = useRef<FlatList<FeedItem>>(null);
   const isNearLatestRef = useRef(true);
   const draftBeforeSend = useRef('');
+  const canSend = canSendTopicMessage({
+    categoryId: category.id,
+    topicId: topic.id,
+    subtopicId: selectedSubtopic?.id,
+    conversationReady: Boolean(conversation),
+    sessionReady: Boolean(supabase && session?.access_token),
+    loading,
+    loadError,
+    sending,
+    message: draft,
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -133,36 +159,56 @@ function TopicConversation({
 
       try {
         const client = supabase;
-        const query = () =>
-          client
+        const query = (moduleId: string | null) => {
+          let conversationQuery = client
             .from('learning_conversations')
             .select('*')
             .eq('user_id', userId)
             .eq('category_id', category.id)
-            .eq('module_id', module.id)
-            .eq('topic_id', topic.id)
-            .maybeSingle();
+            .eq('topic_id', topic.id);
+          conversationQuery =
+            moduleId === null
+              ? conversationQuery.is('module_id', null)
+              : conversationQuery.eq('module_id', moduleId);
+          return conversationQuery.maybeSingle();
+        };
 
-        let { data, error } = await query();
+        let { data, error } = await query(null);
         if (error) {
           throw error;
         }
 
         if (!data) {
-          const created = await client
-            .from('learning_conversations')
-            .insert({
-              user_id: userId,
-              category_id: category.id,
-              module_id: module.id,
-              topic_id: topic.id,
-              lesson_content: localLesson,
-            })
-            .select('*')
-            .single();
+          const legacyResult = await query(category.id);
+          if (legacyResult.error) {
+            throw legacyResult.error;
+          }
+          data = legacyResult.data;
+        }
 
+        if (!data) {
+          const insertConversation = (moduleId: string | null) =>
+            client
+              .from('learning_conversations')
+              .insert({
+                user_id: userId,
+                category_id: category.id,
+                ...(moduleId === null ? {} : { module_id: moduleId }),
+                topic_id: topic.id,
+                lesson_content: localLesson,
+              })
+              .select('*')
+              .single();
+
+          let created = await insertConversation(null);
+          if (created.error?.code === '23502') {
+            created = await insertConversation(category.id);
+          }
           if (created.error?.code === '23505') {
-            ({ data, error } = await query());
+            ({ data, error } = await query(null));
+            if (!error && !data) {
+              ({ data, error } = await query(category.id));
+            }
           } else {
             data = created.data;
             error = created.error;
@@ -190,9 +236,7 @@ function TopicConversation({
 
         if (!cancelled) {
           setConversation(currentConversation);
-          setLesson(isTopicLesson(currentConversation.lesson_content)
-            ? currentConversation.lesson_content
-            : localLesson);
+          setLesson(localLesson);
           setMessages((result.data ?? []) as LearningChatMessage[]);
           setLoading(false);
         }
@@ -215,7 +259,6 @@ function TopicConversation({
     category.id,
     loadAttempt,
     localLesson,
-    module.id,
     topic.id,
     userId,
   ]);
@@ -233,7 +276,6 @@ function TopicConversation({
           .select('id,title,content,source_type')
           .eq('user_id', userId)
           .eq('category_id', category.id)
-          .eq('module_id', module.id)
           .eq('topic_id', topic.id)
           .order('created_at', { ascending: true })
           .limit(20);
@@ -257,7 +299,7 @@ function TopicConversation({
     return () => {
       active = false;
     };
-  }, [category.id, module.id, topic.id, userId]);
+  }, [category.id, topic.id, userId]);
 
   const addAssistantReply = useCallback(
     async (request: RetryRequest, currentConversation: LearningConversation) => {
@@ -268,10 +310,17 @@ function TopicConversation({
 
       const result = await askTopicQuestion({
         accessToken,
+        categoryId: category.id,
+        topicId: topic.id,
+        subtopicId: selectedSubtopic.id,
         category: category.title,
-        module: module.title,
         topic: topic.title,
         officialContent: JSON.stringify({
+          canonicalPath: {
+            categoryId: category.id,
+            topicId: topic.id,
+            subtopicId: selectedSubtopic.id,
+          },
           officialLesson: lesson,
           savedLearningNotes: learningNotes.slice(-3).map((note) => ({
             title: note.title,
@@ -301,12 +350,21 @@ function TopicConversation({
       setRetryRequest(null);
       setSendError('');
     },
-    [category.title, learningNotes, lesson, module.title, session?.access_token, topic.title],
+    [
+      category.id,
+      category.title,
+      learningNotes,
+      lesson,
+      selectedSubtopic.id,
+      session?.access_token,
+      topic.id,
+      topic.title,
+    ],
   );
 
   const submitQuestion = useCallback(async () => {
     const question = draft.trim();
-    if (!question || !conversation || !supabase || sendingRef.current) {
+    if (!question || !conversation || !selectedSubtopic || !session?.access_token || !supabase || sendingRef.current) {
       return;
     }
 
@@ -357,7 +415,7 @@ function TopicConversation({
       sendingRef.current = false;
       setSending(false);
     }
-  }, [addAssistantReply, conversation, draft, messages]);
+  }, [addAssistantReply, conversation, draft, messages, selectedSubtopic, session?.access_token]);
 
   const retryReply = useCallback(async () => {
     if (!retryRequest || !conversation || sendingRef.current) {
@@ -407,7 +465,6 @@ function TopicConversation({
         contentSize.height - layoutMeasurement.height - contentOffset.y;
       const isNearLatest = distanceFromLatest <= 120;
       isNearLatestRef.current = isNearLatest;
-      setShowJumpToLatest(!isNearLatest);
     },
     [],
   );
@@ -422,10 +479,10 @@ function TopicConversation({
     [],
   );
 
-  const returnToModule = () =>
+  const returnToCategory = () =>
     router.push({
       pathname: '/learning-path',
-      params: { categoryId: category.id, moduleId: module.id },
+      params: { categoryId: category.id },
     });
 
   const openTopic = (nextTopicId: string) =>
@@ -438,10 +495,10 @@ function TopicConversation({
       style={stylesForTheme.screen}>
       <View style={stylesForTheme.compactHeader}>
         <Pressable
-          accessibilityLabel={`Back to ${module.title}`}
+          accessibilityLabel={`Back to ${category.title}`}
           accessibilityRole="button"
           hitSlop={8}
-          onPress={returnToModule}
+          onPress={returnToCategory}
           style={({ pressed }) => [stylesForTheme.backButton, pressed && stylesForTheme.pressed]}>
           <SymbolView
             name={{ ios: 'chevron.left', android: 'arrow_back', web: 'arrow_back' }}
@@ -507,13 +564,27 @@ function TopicConversation({
               </View>
             }
           />
-          {showJumpToLatest ? (
+          <View style={stylesForTheme.scrollControls}>
+            <Pressable
+              accessibilityLabel="Scroll topic content to top"
+              accessibilityRole="button"
+              onPress={() => listRef.current?.scrollToOffset({ offset: 0, animated: true })}
+              style={({ pressed }) => [
+                stylesForTheme.scrollControl,
+                pressed && stylesForTheme.pressed,
+              ]}>
+              <SymbolView
+                name={{ ios: 'arrow.up', android: 'arrow_upward', web: 'arrow_upward' }}
+                size={19}
+                tintColor={colors.white}
+              />
+            </Pressable>
             <Pressable
               accessibilityLabel="Jump to latest message"
               accessibilityRole="button"
               onPress={() => listRef.current?.scrollToEnd({ animated: true })}
               style={({ pressed }) => [
-                stylesForTheme.jumpToLatest,
+                stylesForTheme.scrollControl,
                 pressed && stylesForTheme.pressed,
               ]}>
               <SymbolView
@@ -522,7 +593,7 @@ function TopicConversation({
                 tintColor={colors.white}
               />
             </Pressable>
-          ) : null}
+          </View>
         </View>
       )}
 
@@ -567,23 +638,12 @@ function TopicConversation({
           accessibilityLabel="Send message"
           accessibilityRole="button"
           disabled={
-            loading ||
-            Boolean(loadError) ||
-            !conversation ||
-            sending ||
-            Boolean(retryRequest) ||
-            !draft.trim()
+            !canSend
           }
           onPress={() => void submitQuestion()}
           style={({ pressed }) => [
             stylesForTheme.sendButton,
-            (loading ||
-              Boolean(loadError) ||
-              !conversation ||
-              sending ||
-              Boolean(retryRequest) ||
-              !draft.trim()) &&
-              stylesForTheme.sendDisabled,
+            !canSend && stylesForTheme.sendDisabled,
             pressed && stylesForTheme.pressed,
           ]}>
           {sending ? (
@@ -619,8 +679,8 @@ function LessonMessage({ lesson }: { lesson: TopicLesson }) {
           <Text style={[styles.lessonTitle, { color: colors.primaryText }]}>{lesson.title}</Text>
           <Text style={[styles.lessonSummary, { color: colors.secondaryText }]}>{lesson.summary}</Text>
           <MaterialSection title="What you’ll learn" items={lesson.explanation} />
-          {lesson.examples.map((example) => (
-            <View key={example.title} style={styles.lessonSection}>
+          {lesson.examples.map((example, index) => (
+            <View key={`${example.title}-${index}`} style={styles.lessonSection}>
               <Text style={[styles.sectionTitle, { color: colors.primaryText }]}>{example.title}</Text>
               <Text style={[styles.bodyText, { color: colors.secondaryText }]}>{example.explanation}</Text>
               <View style={[styles.codeCard, { backgroundColor: colors.codeBackground, borderColor: colors.border }]}>
@@ -638,8 +698,8 @@ function LessonMessage({ lesson }: { lesson: TopicLesson }) {
                   {paragraph}
                 </Text>
               ))}
-              {subtopic.examples.map((example) => (
-                <View key={example.title} style={styles.subtopicExample}>
+              {subtopic.examples.map((example, index) => (
+                <View key={`${subtopic.id}-${example.title}-${index}`} style={styles.subtopicExample}>
                   <Text style={[styles.sectionTitle, { color: colors.primaryText }]}>{example.title}</Text>
                   <Text style={[styles.bodyText, { color: colors.secondaryText }]}>{example.explanation}</Text>
                   <View style={[styles.codeCard, { backgroundColor: colors.codeBackground, borderColor: colors.border }]}>
@@ -779,11 +839,14 @@ function makeStyles(colors: ReturnType<typeof import('@/constants/theme').getThe
       paddingBottom: 6,
     },
     backButton: {
-      width: 36,
-      height: 32,
+      width: 42,
+      height: 42,
+      borderWidth: 1,
       alignItems: 'center',
       justifyContent: 'center',
-      borderRadius: 16,
+      borderRadius: 21,
+      backgroundColor: colors.surface,
+      borderColor: colors.border,
     },
     compactTitle: {
       flex: 1,
@@ -1005,10 +1068,13 @@ function makeStyles(colors: ReturnType<typeof import('@/constants/theme').getThe
     pressed: {
       opacity: 0.8,
     },
-    jumpToLatest: {
+    scrollControls: {
       position: 'absolute',
       right: 12,
       bottom: 14,
+      gap: 8,
+    },
+    scrollControl: {
       width: 42,
       height: 42,
       borderRadius: 21,
@@ -1071,20 +1137,6 @@ function makeStyles(colors: ReturnType<typeof import('@/constants/theme').getThe
       fontWeight: '700',
     },
   });
-}
-
-function isTopicLesson(value: unknown): value is TopicLesson {
-  if (typeof value !== 'object' || value === null) {
-    return false;
-  }
-  const lesson = value as Partial<TopicLesson>;
-  return (
-    typeof lesson.title === 'string' &&
-    typeof lesson.summary === 'string' &&
-    Array.isArray(lesson.explanation) &&
-    Array.isArray(lesson.examples) &&
-    Array.isArray(lesson.subtopics)
-  );
 }
 
 function getErrorMessage(error: unknown, fallback: string) {

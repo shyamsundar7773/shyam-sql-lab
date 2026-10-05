@@ -1,0 +1,50 @@
+[
+  {
+    "id": "sql-foundations",
+    "title": "SQL Foundations",
+    "description": "Build a foundation in selecting and filtering SQL query results.",
+    "accent": "blue",
+    "topics": [
+      {
+        "id": "select-statements",
+        "title": "SELECT Statements",
+        "summary": "Select columns and filter rows in query results.",
+        "estimatedMinutes": 20,
+        "subtopics": [
+          {
+            "id": "selecting-columns",
+            "title": "Selecting Columns"
+          },
+          {
+            "id": "filtering-rows",
+            "title": "Filtering Rows"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "data-querying",
+    "title": "Data Querying",
+    "description": "Summarize query results with aggregate functions and grouping.",
+    "accent": "cyan",
+    "topics": [
+      {
+        "id": "aggregations",
+        "title": "Aggregations",
+        "summary": "Count and group data to produce summaries.",
+        "estimatedMinutes": 24,
+        "subtopics": [
+          {
+            "id": "count-data",
+            "title": "Counting Data"
+          },
+          {
+            "id": "group-by-basics",
+            "title": "GROUP BY Basics"
+          }
+        ]
+      }
+    ]
+  }
+]

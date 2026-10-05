@@ -10,6 +10,12 @@ import type {
   NoteSourceType,
 } from '@/types/notes';
 
+export const UNCATEGORIZED_LOCATION_ID = 'uncategorized';
+
+function isSpecialLocationId(value?: string | null) {
+  return !value || value === UNCATEGORIZED_LOCATION_ID;
+}
+
 export type TaxonomyLookup = {
   categories: Map<string, Category>;
   modules: Map<string, Module>;
@@ -25,13 +31,16 @@ export function getTaxonomyLookup(): TaxonomyLookup {
 
   for (const category of sqlLearningCategories) {
     categories.set(category.id, category);
-    for (const module of category.modules) {
-      modules.set(module.id, module);
-      for (const topic of module.topics) {
-        topics.set(topic.id, topic);
-        for (const subtopic of topic.subtopics) {
-          subtopics.set(subtopic.id, subtopic);
-        }
+    modules.set(category.id, {
+      id: category.id,
+      title: category.title,
+      description: '',
+      topics: category.topics,
+    });
+    for (const topic of category.topics) {
+      topics.set(topic.id, topic);
+      for (const subtopic of topic.subtopics) {
+        subtopics.set(subtopic.id, subtopic);
       }
     }
   }
@@ -39,13 +48,38 @@ export function getTaxonomyLookup(): TaxonomyLookup {
   return { categories, modules, topics, subtopics };
 }
 
-export function getLocationLabel(location: NoteLocation): string {
+export function getLocationLabel(location: Partial<NoteLocation>): string {
   const { categories, modules, topics, subtopics } = getTaxonomyLookup();
-  const category = categories.get(location.categoryId)?.title ?? 'Unknown category';
-  const module = modules.get(location.moduleId)?.title ?? 'Unknown module';
-  const topic = topics.get(location.topicId)?.title ?? 'Unknown topic';
-  const subtopic = subtopics.get(location.subtopicId)?.title ?? 'Unknown subtopic';
-  return `${category} / ${module} / ${topic} / ${subtopic}`;
+  const isUncategorized =
+    isSpecialLocationId(location.categoryId) &&
+    isSpecialLocationId(location.moduleId) &&
+    isSpecialLocationId(location.topicId) &&
+    isSpecialLocationId(location.subtopicId);
+
+  if (isUncategorized) {
+    return 'Uncategorized';
+  }
+
+  const category =
+    isSpecialLocationId(location.categoryId)
+      ? 'Uncategorized'
+      : categories.get(location.categoryId ?? '')?.title ?? 'Unknown category';
+  const module =
+    isSpecialLocationId(location.moduleId)
+      || location.moduleId === location.categoryId
+      ? 'Uncategorized'
+      : modules.get(location.moduleId ?? '')?.title ?? 'Unknown module';
+  const topic =
+    isSpecialLocationId(location.topicId)
+      ? 'Uncategorized'
+      : topics.get(location.topicId ?? '')?.title ?? 'Unknown topic';
+  const subtopic =
+    isSpecialLocationId(location.subtopicId)
+      ? 'Uncategorized'
+      : subtopics.get(location.subtopicId ?? '')?.title ?? 'Unknown subtopic';
+  return location.moduleId === location.categoryId
+    ? `${category} / ${topic} / ${subtopic}`
+    : `${category} / ${module} / ${topic} / ${subtopic}`;
 }
 
 export function getCategoryOptions() {
@@ -53,31 +87,37 @@ export function getCategoryOptions() {
 }
 
 export function getModuleOptions(categoryId: string) {
+  if (isSpecialLocationId(categoryId)) {
+    return [{ label: 'Uncategorized', value: UNCATEGORIZED_LOCATION_ID }];
+  }
   const category = sqlLearningCategories.find((item) => item.id === categoryId);
-  return (category?.modules ?? []).map((module) => ({ label: module.title, value: module.id }));
+  return category ? [{ label: 'Topics', value: category.id }] : [];
 }
 
 export function getTopicOptions(moduleId: string) {
+  if (isSpecialLocationId(moduleId)) {
+    return [{ label: 'Uncategorized', value: UNCATEGORIZED_LOCATION_ID }];
+  }
   for (const category of sqlLearningCategories) {
-    const module = category.modules.find((item) => item.id === moduleId);
-    if (!module) {
+    if (category.id !== moduleId) {
       continue;
     }
-    return module.topics.map((topic) => ({ label: topic.title, value: topic.id }));
+    return category.topics.map((topic) => ({ label: topic.title, value: topic.id }));
   }
-  return [];
+  return [{ label: 'Uncategorized', value: UNCATEGORIZED_LOCATION_ID }];
 }
 
 export function getSubtopicOptions(topicId: string) {
+  if (isSpecialLocationId(topicId)) {
+    return [{ label: 'Uncategorized', value: UNCATEGORIZED_LOCATION_ID }];
+  }
   for (const category of sqlLearningCategories) {
-    for (const module of category.modules) {
-      const topic = module.topics.find((item) => item.id === topicId);
-      if (topic) {
-        return topic.subtopics.map((subtopic) => ({ label: subtopic.title, value: subtopic.id }));
-      }
+    const topic = category.topics.find((item) => item.id === topicId);
+    if (topic) {
+      return topic.subtopics.map((subtopic) => ({ label: subtopic.title, value: subtopic.id }));
     }
   }
-  return [];
+  return [{ label: 'Uncategorized', value: UNCATEGORIZED_LOCATION_ID }];
 }
 
 export function createManualNotePayload(
@@ -90,11 +130,11 @@ export function createManualNotePayload(
   const module = location.modules.get(input.moduleId);
   const topic = location.topics.get(input.topicId);
   const subtopic = location.subtopics.get(input.subtopicId);
-  if (!category || !module || !category.modules.some((item) => item.id === module.id)) {
+  if (!category || !module || module.id !== category.id) {
     throw new Error('Choose a valid Category and Module.');
   }
-  if (!topic || !module.topics.some((item) => item.id === topic.id)) {
-    throw new Error('Choose a Topic that belongs to the selected Module.');
+  if (!topic || !category.topics.some((item) => item.id === topic.id)) {
+    throw new Error('Choose a Topic that belongs to the selected Category.');
   }
   if (!subtopic || !topic.subtopics.some((item) => item.id === subtopic.id)) {
     throw new Error('Choose a Subtopic that belongs to the selected Topic.');
@@ -300,10 +340,13 @@ function normalizeWords(value: string) {
 
 function flattenTaxonomy() {
   return sqlLearningCategories.flatMap((category) =>
-    category.modules.flatMap((module) =>
-      module.topics.flatMap((topic) =>
-        topic.subtopics.map((subtopic) => ({ category, module, topic, subtopic })),
-      ),
+    category.topics.flatMap((topic) =>
+      topic.subtopics.map((subtopic) => ({
+        category,
+        module: { id: category.id, title: category.title, description: '', topics: category.topics },
+        topic,
+        subtopic,
+      })),
     ),
   );
 }

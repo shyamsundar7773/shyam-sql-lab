@@ -38,5 +38,5 @@ export type Category = {
   title: string;
   description: string;
   accent: 'blue' | 'cyan' | 'green' | 'violet';
-  modules: Module[];
+  topics: Topic[];
 };

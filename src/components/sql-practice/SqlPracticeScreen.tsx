@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { router } from 'expo-router';
-import { SymbolView } from 'expo-symbols';
+import { router, useLocalSearchParams } from 'expo-router';
+import { ChevronLeft } from 'lucide-react-native';
 import {
   ActivityIndicator,
   Pressable,
@@ -13,26 +13,24 @@ import {
 } from 'react-native';
 
 import { PageHeader } from '@/components/PageHeader';
-import { MarkdownContent } from '@/components/topic-chat/MarkdownContent';
+import { useAppShellScrollToTopControl } from '@/components/app-shell/AppShell';
 import { Badge, Button, Card, SectionHeader } from '@/components/ui/primitives';
 import { DesignTokens } from '@/constants/theme';
 import { useAuth } from '@/contexts/auth-context';
 import { useAppTheme } from '@/contexts/theme-context';
 import { sqlLearningCategories } from '@/data/sqlLearningContent';
 import {
-  askPracticeEvaluator,
   generatePracticeQuestions,
   runPracticeSql,
-  type PracticeChatMessage,
 } from '@/lib/api';
 import {
-  getPracticeLearningContext,
+  getPracticeEvaluatorExecution,
+  getPracticeEvaluatorRoute,
   getQuestionIndex,
   updatePracticeQuestionDraft,
 } from '@/lib/sql-practice-notes';
 import { supabase } from '@/lib/supabase';
 import type {
-  PracticeConversationMessage,
   PracticeQuestionRecord,
   SqlPracticeDifficulty,
   SqlPracticeExecutionResult,
@@ -55,7 +53,6 @@ type PracticeSetRecord = {
 
 type PracticeConfiguration = {
   categoryId: string;
-  moduleId: string;
   topicId: string;
   subtopicId: string;
   difficulty: SqlPracticeDifficulty;
@@ -71,70 +68,59 @@ type PracticeAttemptRecord = {
   created_at: string;
 };
 
-type SetFilter = 'All' | 'In Progress' | 'Completed' | 'Needs Review' | 'Bookmarked';
-type PageView = 'generate' | 'my-practice' | 'workspace';
+type PageView = 'generate' | 'workspace';
 
 const difficulties: SqlPracticeDifficulty[] = ['Beginner', 'Intermediate', 'Advanced'];
-const questionTypes: SqlPracticeQuestionType[] = ['SELECT', 'WHERE', 'JOIN', 'GROUP BY', 'AGGREGATION'];
-const setFilters: SetFilter[] = ['All', 'In Progress', 'Completed', 'Needs Review', 'Bookmarked'];
 
 export default function SqlPracticeScreen() {
+  const { restoreSetId, restoreQuestionId } = useLocalSearchParams<{
+    restoreSetId?: string;
+    restoreQuestionId?: string;
+  }>();
   const { colors } = useAppTheme();
   const { user, session } = useAuth();
+  const setScrollControlsVisible = useAppShellScrollToTopControl();
   const { width } = useWindowDimensions();
   const isDesktop = width >= DesignTokens.layout.desktopBreakpoint;
   const [sets, setSets] = useState<PracticeSetRecord[]>([]);
   const [activeSetId, setActiveSetId] = useState<string | null>(null);
   const [view, setView] = useState<PageView>('generate');
-  const [filter, setFilter] = useState<SetFilter>('All');
   const [selectedCategoryId, setSelectedCategoryId] = useState(sqlLearningCategories[0]?.id ?? '');
-  const [selectedModuleId, setSelectedModuleId] = useState(
-    sqlLearningCategories[0]?.modules[0]?.id ?? '',
-  );
   const [selectedTopicId, setSelectedTopicId] = useState(
-    sqlLearningCategories[0]?.modules[0]?.topics[0]?.id ?? '',
+    sqlLearningCategories[0]?.topics[0]?.id ?? '',
   );
   const [selectedSubtopicId, setSelectedSubtopicId] = useState(
-    sqlLearningCategories[0]?.modules[0]?.topics[0]?.subtopics[0]?.id ?? '',
+    sqlLearningCategories[0]?.topics[0]?.subtopics[0]?.id ?? '',
   );
   const [difficulty, setDifficulty] = useState<SqlPracticeDifficulty>('Beginner');
-  const [questionType, setQuestionType] = useState<SqlPracticeQuestionType>('SELECT');
+  const questionType: SqlPracticeQuestionType = 'SELECT';
   const [questionCount, setQuestionCount] = useState(3);
-  const [messages, setMessages] = useState<PracticeConversationMessage[]>([]);
-  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [attempts, setAttempts] = useState<PracticeAttemptRecord[]>([]);
-  const [messageDraft, setMessageDraft] = useState('');
-  const [evaluatorOpen, setEvaluatorOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [executing, setExecuting] = useState(false);
-  const [sendingMessage, setSendingMessage] = useState(false);
-  const [loadingMessages, setLoadingMessages] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveMessage, setSaveMessage] = useState('');
   const [error, setError] = useState('');
   const [storageError, setStorageError] = useState('');
-  const sendLock = useRef(false);
+  const [setToDelete, setSetToDelete] = useState<PracticeSetRecord | null>(null);
+  const [deleteSetError, setDeleteSetError] = useState('');
+  const [deletingSet, setDeletingSet] = useState(false);
   const pendingDraft = useRef<{ questionId: string; sql: string } | null>(null);
-  const evaluatorMessagesRef = useRef<ScrollView>(null);
-  const isAtLatestMessage = useRef(true);
   const { styles } = usePracticeStyles();
 
-  const scrollToLatestMessage = () => {
-    isAtLatestMessage.current = true;
-    setShowJumpToLatest(false);
-    evaluatorMessagesRef.current?.scrollToEnd({ animated: true });
-  };
+  useEffect(() => {
+    setScrollControlsVisible(true);
+    return () => setScrollControlsVisible(false);
+  }, [setScrollControlsVisible]);
 
   const category = useMemo(
     () => sqlLearningCategories.find((item) => item.id === selectedCategoryId) ?? null,
     [selectedCategoryId],
   );
-  const module = useMemo(
-    () => category?.modules.find((item) => item.id === selectedModuleId) ?? null,
-    [category, selectedModuleId],
-  );
   const topic = useMemo(
-    () => module?.topics.find((item) => item.id === selectedTopicId) ?? null,
-    [module, selectedTopicId],
+    () => category?.topics.find((item) => item.id === selectedTopicId) ?? null,
+    [category, selectedTopicId],
   );
   const subtopic = useMemo(
     () => topic?.subtopics.find((item) => item.id === selectedSubtopicId) ?? null,
@@ -142,8 +128,48 @@ export default function SqlPracticeScreen() {
   );
 
   const activeSet = sets.find((set) => set.id === activeSetId) ?? null;
+  const latestMatchingSet = sets.find(
+    (set) =>
+      set.config.categoryId === category?.id &&
+      set.config.topicId === topic?.id &&
+      set.config.subtopicId === subtopic?.id &&
+      set.config.difficulty === difficulty &&
+      set.config.questionType === questionType &&
+      set.config.count === questionCount,
+  );
   const currentQuestion = activeSet?.questions[activeSet.current_question_index] ?? null;
   const attemptQuestionId = currentQuestion?.id;
+
+  const deletePracticeSet = async () => {
+    if (!setToDelete || !user || !supabase) {
+      setDeleteSetError('Sign in before deleting a practice set.');
+      return;
+    }
+    setDeletingSet(true);
+    setDeleteSetError('');
+    try {
+      const { error: deleteError } = await supabase
+        .from('practice_sets')
+        .delete()
+        .eq('id', setToDelete.id)
+        .eq('user_id', user.id);
+      if (deleteError) {
+        throw deleteError;
+      }
+      setSets((current) => current.filter((set) => set.id !== setToDelete.id));
+      if (activeSetId === setToDelete.id) {
+        setActiveSetId(null);
+        setView('generate');
+      }
+      setSetToDelete(null);
+    } catch (deleteError) {
+      setDeleteSetError(
+        deleteError instanceof Error ? deleteError.message : 'The selected practice set could not be deleted.',
+      );
+    } finally {
+      setDeletingSet(false);
+    }
+  };
 
   const loadPracticeSets = useCallback(async () => {
     if (!user || !supabase) {
@@ -189,13 +215,37 @@ export default function SqlPracticeScreen() {
         group.push(question);
         questionsBySet.set(question.set_id, group);
       });
-      setSets(
-        setRows.map((row) => ({
+      setStorageError('');
+      const loadedSets = setRows.map((row) => ({
           ...row,
           questions: questionsBySet.get(row.id) ?? [],
-        })),
-      );
-      setStorageError('');
+        }));
+      if (restoreSetId && restoreQuestionId) {
+        const restoredSet = loadedSets.find((set) => set.id === restoreSetId);
+        const restoredQuestionIndex =
+          restoredSet?.questions.findIndex((question) => question.id === restoreQuestionId) ?? -1;
+        if (!restoredSet || restoredQuestionIndex < 0) {
+          throw new Error('The evaluator question could not be restored to its saved practice set.');
+        }
+        if (restoredSet.current_question_index !== restoredQuestionIndex) {
+          const restoreResult = await client
+            .from('practice_sets')
+            .update({
+              current_question_index: restoredQuestionIndex,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', restoredSet.id);
+          if (restoreResult.error) {
+            setStorageError(`Question position could not be restored: ${restoreResult.error.message}`);
+          } else {
+            setStorageError('');
+          }
+          restoredSet.current_question_index = restoredQuestionIndex;
+        }
+        setActiveSetId(restoredSet.id);
+        setView('workspace');
+      }
+      setSets(loadedSets);
     } catch (loadError) {
       setError(
         getErrorMessage(
@@ -206,7 +256,7 @@ export default function SqlPracticeScreen() {
     } finally {
       setLoading(false);
     }
-  }, [user]);
+  }, [restoreQuestionId, restoreSetId, user]);
 
   useEffect(() => {
     // The request synchronizes the saved practice sets and loading indicator.
@@ -293,28 +343,6 @@ export default function SqlPracticeScreen() {
     [],
   );
 
-  const questionSummary = useMemo(() => {
-    const allQuestions = sets.flatMap((set) => set.questions);
-    return {
-      activeSets: sets.filter((set) => getSetStatus(set) === 'In Progress').length,
-      toContinue: allQuestions.filter((question) => question.status === 'in_progress').length,
-      completed: allQuestions.filter((question) => question.status === 'completed').length,
-      needsReview: allQuestions.filter((question) => question.status === 'needs_review').length,
-    };
-  }, [sets]);
-
-  const filteredSets = useMemo(
-    () =>
-      sets.filter((set) =>
-        filter === 'All'
-          ? true
-          : filter === 'Bookmarked'
-            ? set.bookmarked
-            : getSetStatus(set) === filter,
-      ),
-    [filter, sets],
-  );
-
   const updateActiveSetLocally = (updater: (set: PracticeSetRecord) => PracticeSetRecord) => {
     if (!activeSetId) {
       return;
@@ -323,7 +351,7 @@ export default function SqlPracticeScreen() {
   };
 
   const generateSet = async () => {
-    if (!user || !session?.access_token || !supabase || !category || !module || !topic || !subtopic) {
+    if (!user || !session?.access_token || !supabase || !category || !topic || !subtopic) {
       setError('Sign in and choose a complete topic path before generating a practice set.');
       return;
     }
@@ -333,7 +361,6 @@ export default function SqlPracticeScreen() {
     try {
       const config: PracticeConfiguration = {
         categoryId: category.id,
-        moduleId: module.id,
         topicId: topic.id,
         subtopicId: subtopic.id,
         difficulty,
@@ -341,6 +368,7 @@ export default function SqlPracticeScreen() {
         count: questionCount,
       };
       const learningContext = [
+        `Canonical curriculum IDs: category_id=${category.id}, topic_id=${topic.id}, subtopic_id=${subtopic.id}`,
         `Topic summary: ${topic.summary}`,
         `Topic learning material: ${JSON.stringify({
           explanation: topic.explanation,
@@ -357,8 +385,10 @@ export default function SqlPracticeScreen() {
       ].join('\n');
       const questionContents = await generatePracticeQuestions({
         accessToken: session.access_token,
+        categoryId: category.id,
+        topicId: topic.id,
+        subtopicId: subtopic.id,
         category: category.title,
-        module: module.title,
         topic: topic.title,
         subtopic: subtopic.title,
         difficulty,
@@ -390,9 +420,8 @@ export default function SqlPracticeScreen() {
 
       await loadPracticeSets();
       setActiveSetId(createdSet.created_set_id);
-      setView('workspace');
-      setEvaluatorOpen(false);
-      setMessages([]);
+      setView('generate');
+      setSaveMessage('');
     } catch (generationError) {
       setError(
         getErrorMessage(
@@ -408,9 +437,7 @@ export default function SqlPracticeScreen() {
   const openSet = (set: PracticeSetRecord) => {
     setActiveSetId(set.id);
     setView('workspace');
-    setEvaluatorOpen(false);
     setError('');
-    setMessages([]);
   };
 
   const navigateQuestion = async (direction: -1 | 1) => {
@@ -449,8 +476,6 @@ export default function SqlPracticeScreen() {
     }
     setStorageError('');
     updateActiveSetLocally((set) => ({ ...set, current_question_index: nextIndex }));
-    setMessages([]);
-    setEvaluatorOpen(false);
   };
 
   const executeQuery = async () => {
@@ -509,196 +534,77 @@ export default function SqlPracticeScreen() {
     }
   };
 
-  const sendEvaluatorMessage = async (
-    message: string,
-    history: PracticeConversationMessage[] = messages,
-  ) => {
-    if (
-      sendLock.current ||
-      !currentQuestion ||
-      !activeSet ||
-      !session?.access_token ||
-      !supabase ||
-      !message.trim()
-    ) {
-      return;
-    }
-    sendLock.current = true;
-    setSendingMessage(true);
-    setError('');
-    try {
-      const insertedUser = await supabase
-        .from('practice_evaluator_messages')
-        .insert({
-          question_id: currentQuestion.id,
-          role: 'user',
-          content: message.trim(),
-        })
-        .select('*')
-        .single();
-      if (insertedUser.error) {
-        throw insertedUser.error;
-      }
-      setMessages((current) => [...current, insertedUser.data as PracticeConversationMessage]);
-      setMessageDraft('');
-      const reply = await askPracticeEvaluator({
-        accessToken: session.access_token,
-        context: getPracticeLearningContext(activeSet.config),
-        question: currentQuestion.content,
-        sql: currentQuestion.draft_sql,
-        result: currentQuestion.latest_result,
-        history: history
-          .slice(-20)
-          .map(({ role, content }): PracticeChatMessage => ({ role, content })),
-        message: message.trim(),
-      });
-      const insertedAssistant = await supabase
-        .from('practice_evaluator_messages')
-        .insert({
-          question_id: currentQuestion.id,
-          role: 'assistant',
-          content: reply,
-        })
-        .select('*')
-        .single();
-      if (insertedAssistant.error) {
-        throw new Error(`The AI response was received but could not be saved: ${insertedAssistant.error.message}`);
-      }
-      setMessages((current) => [...current, insertedAssistant.data as PracticeConversationMessage]);
-    } catch (chatError) {
-      setError(
-        getErrorMessage(
-          chatError,
-          'The evaluator could not respond. Your question is saved; retry or ask again.',
-        ),
-      );
-    } finally {
-      sendLock.current = false;
-      setSendingMessage(false);
-    }
-  };
-
   const openEvaluator = async () => {
-    if (!currentQuestion || !supabase) {
+    if (!currentQuestion || !activeSet || !supabase) {
       return;
     }
-    if (!isDesktop) {
-      const draftSave = await supabase
-        .from('practice_questions')
-        .update({
-          draft_sql: currentQuestion.draft_sql,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', currentQuestion.id);
-      if (draftSave.error) {
-        setStorageError(
-          `SQL draft could not be saved before opening the evaluator: ${draftSave.error.message}`,
-        );
-        return;
-      }
-      router.push({
-        pathname: '/sql-practice-evaluator',
-        params: { setId: activeSetId ?? '', questionId: currentQuestion.id },
-      });
-      return;
-    }
-    setEvaluatorOpen(true);
-    setLoadingMessages(true);
-    setError('');
-    try {
-      const result = await supabase
-        .from('practice_evaluator_messages')
-        .select('*')
-        .eq('question_id', currentQuestion.id)
-        .order('created_at', { ascending: true })
-        .order('id', { ascending: true });
-      if (result.error) {
-        throw result.error;
-      }
-      const savedMessages = (result.data ?? []) as unknown as PracticeConversationMessage[];
-      setMessages(savedMessages);
-      if (savedMessages.length === 0) {
-        const initialMessage = 'Please review my current SQL approach for this question. Explain what is correct, what could improve, and why.';
-        await sendEvaluatorMessage(initialMessage, []);
-      }
-    } catch (chatError) {
-      setError(
-        getErrorMessage(
-          chatError,
-          'The saved evaluator conversation could not be loaded. Apply the SQL Practice migration and retry.',
-        ),
-      );
-    } finally {
-      setLoadingMessages(false);
-    }
-  };
-
-  const markCompleted = async () => {
-    if (!activeSet || !currentQuestion || !supabase) {
-      return;
-    }
-    const { error: updateError } = await supabase
+    const draftSave = await supabase
       .from('practice_questions')
-      .update({ status: 'completed', updated_at: new Date().toISOString() })
+      .update({
+        draft_sql: currentQuestion.draft_sql,
+        updated_at: new Date().toISOString(),
+      })
       .eq('id', currentQuestion.id);
-    if (updateError) {
-      setStorageError(`Completion state could not be saved: ${updateError.message}`);
+    if (draftSave.error) {
+      setStorageError(
+        `SQL draft could not be saved before opening the evaluator: ${draftSave.error.message}`,
+      );
+      return;
+    }
+    pendingDraft.current = null;
+    const latestAttempt = await supabase
+      .from('practice_attempts')
+      .select('id,question_id,sql,execution_result,created_at')
+      .eq('question_id', currentQuestion.id)
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (latestAttempt.error) {
+      setStorageError(`Latest SQL attempt could not be loaded: ${latestAttempt.error.message}`);
       return;
     }
     setStorageError('');
-    updateActiveSetLocally((set) => ({
-      ...set,
-      questions: set.questions.map((question) =>
-        question.id === currentQuestion.id
-          ? { ...question, status: 'completed' }
-          : question,
-      ),
-    }));
+    const execution = getPracticeEvaluatorExecution(
+      currentQuestion.id,
+      currentQuestion.draft_sql,
+      latestAttempt.data as PracticeAttemptRecord | null,
+    );
+    router.push(getPracticeEvaluatorRoute(activeSet.id, currentQuestion.id, execution));
   };
 
-  const toggleBookmark = async (set: PracticeSetRecord) => {
-    if (!supabase) {
+  const saveCurrentWork = async () => {
+    if (!currentQuestion || !supabase) {
+      setStorageError('Practice storage is not configured.');
       return;
     }
-    const bookmarked = !set.bookmarked;
-    const { error: updateError } = await supabase
-      .from('practice_sets')
-      .update({ bookmarked, updated_at: new Date().toISOString() })
-      .eq('id', set.id);
-    if (updateError) {
-      setError(`Bookmark state could not be saved: ${updateError.message}`);
-      return;
+    setSaving(true);
+    setSaveMessage('');
+    const { error: saveError } = await supabase
+      .from('practice_questions')
+      .update({ draft_sql: currentQuestion.draft_sql, updated_at: new Date().toISOString() })
+      .eq('id', currentQuestion.id);
+    if (saveError) {
+      setStorageError(`Practice work could not be saved: ${saveError.message}`);
+    } else {
+      pendingDraft.current = null;
+      setStorageError('');
+      setSaveMessage('Saved');
     }
-    setSets((current) =>
-      current.map((item) => (item.id === set.id ? { ...item, bookmarked } : item)),
-    );
+    setSaving(false);
   };
 
   const changeCategory = (id: string) => {
     const nextCategory = sqlLearningCategories.find((item) => item.id === id);
     setSelectedCategoryId(id);
-    setSelectedModuleId(nextCategory?.modules[0]?.id ?? '');
-    setSelectedTopicId(nextCategory?.modules[0]?.topics[0]?.id ?? '');
-    setSelectedSubtopicId(nextCategory?.modules[0]?.topics[0]?.subtopics[0]?.id ?? '');
-  };
-  const changeModule = (id: string) => {
-    const nextModule = category?.modules.find((item) => item.id === id);
-    setSelectedModuleId(id);
-    setSelectedTopicId(nextModule?.topics[0]?.id ?? '');
-    setSelectedSubtopicId(nextModule?.topics[0]?.subtopics[0]?.id ?? '');
+    setSelectedTopicId(nextCategory?.topics[0]?.id ?? '');
+    setSelectedSubtopicId(nextCategory?.topics[0]?.subtopics[0]?.id ?? '');
   };
   const changeTopic = (id: string) => {
-    const nextTopic = module?.topics.find((item) => item.id === id);
+    const nextTopic = category?.topics.find((item) => item.id === id);
     setSelectedTopicId(id);
     setSelectedSubtopicId(nextTopic?.subtopics[0]?.id ?? '');
   };
-
-  const statusCounts = [
-    { label: 'Active Sets', value: questionSummary.activeSets },
-    { label: 'Questions to Continue', value: questionSummary.toContinue },
-    { label: 'Completed Questions', value: questionSummary.completed },
-    { label: 'Needs Review', value: questionSummary.needsReview },
-  ];
 
   return (
     <View style={styles.screen}>
@@ -708,26 +614,20 @@ export default function SqlPracticeScreen() {
         subtitle="Practice real SQL problems, execute your queries, and learn from every attempt."
       />
 
-      <View style={styles.topActions}>
-        <Button onPress={() => setView('generate')} style={styles.topActionButton}>
-          Generate Practice
-        </Button>
-        <Button
-          variant="secondary"
-          onPress={() => setView('my-practice')}
-          style={styles.topActionButton}>
-          My Practice
-        </Button>
-      </View>
-
-      <View style={styles.metricGrid}>
-        {statusCounts.map((item) => (
-          <Card key={item.label} style={styles.metricCard}>
-            <Text style={[styles.metricValue, { color: colors.primaryText }]}>{item.value}</Text>
-            <Text style={[styles.metricLabel, { color: colors.secondaryText }]}>{item.label}</Text>
-          </Card>
-        ))}
-      </View>
+      {view === 'workspace' ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Back to SQL Practice"
+          onPress={() => setView('generate')}
+          style={({ pressed }) => [
+            styles.backButton,
+            { backgroundColor: colors.surface, borderColor: colors.border },
+            pressed && styles.pressed,
+          ]}>
+          <ChevronLeft color={colors.primary} size={20} strokeWidth={2.5} />
+          <Text style={[styles.backButtonText, { color: colors.primaryText }]}>Back to SQL Practice</Text>
+        </Pressable>
+      ) : null}
 
       {error ? (
         <View style={[styles.notice, { borderColor: colors.danger, backgroundColor: colors.dangerSoft }]}>
@@ -742,10 +642,7 @@ export default function SqlPracticeScreen() {
 
       {view === 'generate' ? (
         <Card style={styles.panel}>
-          <SectionHeader
-            title="Generate Practice"
-            subtitle="Choose a learning path and create a set of original SQL exercises."
-          />
+          <SectionHeader title="Practice setup" subtitle="Choose a topic and generate a question set." />
           <View style={styles.formGrid}>
             <SelectField
               label="Category"
@@ -754,21 +651,21 @@ export default function SqlPracticeScreen() {
               onChange={changeCategory}
             />
             <SelectField
-              label="Module"
-              value={module?.title ?? ''}
-              options={(category?.modules ?? []).map((item) => ({ label: item.title, value: item.id }))}
-              onChange={changeModule}
-            />
-            <SelectField
               label="Topic"
               value={topic?.title ?? ''}
-              options={(module?.topics ?? []).map((item) => ({ label: item.title, value: item.id }))}
+              options={(category?.topics ?? []).map((item) => ({
+                label: item.title,
+                value: item.id,
+              }))}
               onChange={changeTopic}
             />
             <SelectField
               label="Subtopic"
               value={subtopic?.title ?? ''}
-              options={(topic?.subtopics ?? []).map((item) => ({ label: item.title, value: item.id }))}
+              options={(topic?.subtopics ?? []).map((item) => ({
+                label: item.title,
+                value: item.id,
+              }))}
               onChange={setSelectedSubtopicId}
             />
             <SelectField
@@ -776,12 +673,6 @@ export default function SqlPracticeScreen() {
               value={difficulty}
               options={difficulties.map((item) => ({ label: item, value: item }))}
               onChange={(value) => setDifficulty(value as SqlPracticeDifficulty)}
-            />
-            <SelectField
-              label="Question Type"
-              value={questionType}
-              options={questionTypes.map((item) => ({ label: item, value: item }))}
-              onChange={(value) => setQuestionType(value as SqlPracticeQuestionType)}
             />
             <SelectField
               label="Number of Questions"
@@ -807,36 +698,41 @@ export default function SqlPracticeScreen() {
             )}
           </Button>
           <Text style={[styles.helperText, { color: colors.secondaryText }]}>
-            Sets are numbered separately for each matching configuration and saved to your account.
+            Your set number is saved and continues for this topic and difficulty.
           </Text>
-          <SectionHeader title="Recent Sets" subtitle="Reopen your saved work whenever you are ready." />
+          {deleteSetError ? (
+            <Text accessibilityRole="alert" style={[styles.errorText, { color: colors.danger }]}>
+              {deleteSetError}
+            </Text>
+          ) : null}
+          {setToDelete ? (
+            <Card style={styles.panel}>
+              <Text style={[styles.questionTitle, { color: colors.primaryText }]}>
+                Delete Set {setToDelete.set_number}?
+              </Text>
+              <Text style={[styles.helperText, { color: colors.secondaryText }]}>
+                This permanently deletes only this set and its saved questions, attempts, and evaluator messages.
+              </Text>
+              <View style={styles.buttonRow}>
+                <Button disabled={deletingSet} variant="secondary" onPress={() => setSetToDelete(null)}>
+                  Cancel
+                </Button>
+                <Button
+                  disabled={deletingSet}
+                  onPress={() => void deletePracticeSet()}
+                  style={{ backgroundColor: colors.danger }}>
+                  {deletingSet ? 'Deleting…' : 'Delete Set'}
+                </Button>
+              </View>
+            </Card>
+          ) : null}
           <PracticeSetList
-            sets={sets.slice(0, 4)}
+            sets={latestMatchingSet ? [latestMatchingSet] : []}
             onOpen={openSet}
-            onBookmark={(set) => void toggleBookmark(set)}
-            colors={colors}
-            loading={loading}
-          />
-        </Card>
-      ) : null}
-
-      {view === 'my-practice' ? (
-        <Card style={styles.panel}>
-          <SectionHeader title="My Practice" subtitle="Continue, restore, bookmark, or revisit any set." />
-          <View style={styles.filterRow}>
-            {setFilters.map((item) => (
-              <ChoicePill
-                key={item}
-                label={item}
-                selected={filter === item}
-                onPress={() => setFilter(item)}
-              />
-            ))}
-          </View>
-          <PracticeSetList
-            sets={filteredSets}
-            onOpen={openSet}
-            onBookmark={(set) => void toggleBookmark(set)}
+            onDelete={(set) => {
+              setDeleteSetError('');
+              setSetToDelete(set);
+            }}
             colors={colors}
             loading={loading}
           />
@@ -968,13 +864,8 @@ export default function SqlPracticeScreen() {
               <Button variant="secondary" onPress={() => void openEvaluator()}>
                 AI Evaluate
               </Button>
-              {currentQuestion.status !== 'completed' ? (
-                <Button variant="secondary" onPress={() => void markCompleted()}>
-                  Mark Complete
-                </Button>
-              ) : null}
-              <Button variant="secondary" onPress={() => setView('my-practice')}>
-                My Practice
+              <Button disabled={saving} variant="secondary" onPress={() => void saveCurrentWork()}>
+                {saving ? 'Saving…' : saveMessage || 'Save'}
               </Button>
             </View>
           </Card>
@@ -1015,131 +906,14 @@ export default function SqlPracticeScreen() {
           />
           </View>
 
-          {evaluatorOpen && isDesktop ? (
-            <Card style={[styles.panel, styles.desktopEvaluator]}>
-              <SectionHeader
-                title="AI Evaluator"
-                subtitle="A learning conversation about this question and your current SQL."
-                action={
-                  <Button variant="secondary" onPress={() => setEvaluatorOpen(false)}>
-                    Close
-                  </Button>
-                }
-              />
-              {loadingMessages ? <ActivityIndicator color={colors.primary} /> : null}
-              <View style={styles.chatMessageViewport}>
-                <ScrollView
-                  ref={evaluatorMessagesRef}
-                  keyboardShouldPersistTaps="handled"
-                  nestedScrollEnabled
-                  onContentSizeChange={() => {
-                    if (isAtLatestMessage.current) {
-                      requestAnimationFrame(() =>
-                        evaluatorMessagesRef.current?.scrollToEnd({ animated: false }),
-                      );
-                    }
-                  }}
-                  onScroll={(event) => {
-                    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
-                    const isNearLatest =
-                      contentSize.height - contentOffset.y - layoutMeasurement.height < 48;
-                    if (isAtLatestMessage.current !== isNearLatest) {
-                      isAtLatestMessage.current = isNearLatest;
-                      setShowJumpToLatest(!isNearLatest);
-                    }
-                  }}
-                  scrollEventThrottle={16}
-                  style={styles.chatMessageList}
-                  contentContainerStyle={styles.chatMessages}>
-                  {messages.map((message) => (
-                    <View
-                      key={message.id}
-                      style={[
-                        styles.chatBubble,
-                        {
-                          alignSelf: message.role === 'user' ? 'flex-end' : 'flex-start',
-                          backgroundColor:
-                            message.role === 'user' ? colors.primarySoft : colors.surfaceMuted,
-                          borderColor: colors.border,
-                        },
-                      ]}>
-                      {message.role === 'assistant' ? (
-                        <MarkdownContent content={message.content} compactContent />
-                      ) : (
-                        <Text style={[styles.chatUserText, { color: colors.primaryText }]}>
-                          {message.content}
-                        </Text>
-                      )}
-                    </View>
-                  ))}
-                </ScrollView>
-                {showJumpToLatest ? (
-                  <Pressable
-                    accessibilityLabel="Jump to latest message"
-                    accessibilityRole="button"
-                    onPress={scrollToLatestMessage}
-                    style={[
-                      styles.jumpToLatest,
-                      { backgroundColor: colors.surface, borderColor: colors.border },
-                    ]}>
-                    <SymbolView
-                      name={{ ios: 'arrow.down', android: 'arrow_downward', web: 'arrow_downward' }}
-                      size={18}
-                      tintColor={colors.primaryText}
-                    />
-                  </Pressable>
-                ) : null}
-              </View>
-              <View
-                style={[
-                  styles.chatInputRow,
-                  { backgroundColor: colors.surfaceMuted, borderColor: colors.border },
-                ]}>
-                <TextInput
-                  accessibilityLabel="Ask the SQL evaluator a follow-up question"
-                  maxLength={4_000}
-                  multiline
-                  value={messageDraft}
-                  onChangeText={setMessageDraft}
-                  placeholder="Message the evaluator…"
-                  placeholderTextColor={colors.mutedText}
-                  style={[styles.chatInput, { color: colors.primaryText }]}
-                />
-                <Pressable
-                  accessibilityLabel="Send message"
-                  accessibilityRole="button"
-                  disabled={sendingMessage || !messageDraft.trim()}
-                  onPress={() => {
-                    scrollToLatestMessage();
-                    void sendEvaluatorMessage(messageDraft);
-                  }}
-                  style={({ pressed }) => [
-                    styles.chatSendButton,
-                    { backgroundColor: colors.primary },
-                    pressed && styles.chatSendPressed,
-                    (sendingMessage || !messageDraft.trim()) && styles.chatSendDisabled,
-                  ]}>
-                  {sendingMessage ? (
-                    <ActivityIndicator color={colors.white} size="small" />
-                  ) : (
-                    <SymbolView
-                      name={{ ios: 'arrow.up', android: 'arrow_upward', web: 'arrow_upward' }}
-                      size={20}
-                      tintColor={colors.white}
-                    />
-                  )}
-                </Pressable>
-              </View>
-            </Card>
-          ) : null}
         </View>
       ) : view === 'workspace' ? (
         <Card style={styles.panel}>
           <Text style={[styles.emptyTitle, { color: colors.primaryText }]}>
             This practice set has no questions.
           </Text>
-          <Button variant="secondary" onPress={() => setView('my-practice')}>
-            Back to My Practice
+          <Button variant="secondary" onPress={() => setView('generate')}>
+            Back to Generate Practice
           </Button>
         </Card>
       ) : null}
@@ -1150,13 +924,13 @@ export default function SqlPracticeScreen() {
 function PracticeSetList({
   sets,
   onOpen,
-  onBookmark,
+  onDelete,
   colors,
   loading,
 }: {
   sets: PracticeSetRecord[];
   onOpen: (set: PracticeSetRecord) => void;
-  onBookmark: (set: PracticeSetRecord) => void;
+  onDelete: (set: PracticeSetRecord) => void;
   colors: ReturnType<typeof import('@/constants/theme').getThemeColors>;
   loading: boolean;
 }) {
@@ -1177,36 +951,26 @@ function PracticeSetList({
         <View
           key={set.id}
           style={[
-            styles.setItem,
+            styles.setCard,
             { backgroundColor: colors.surfaceMuted, borderColor: colors.border },
           ]}>
-          <Pressable
-            accessibilityRole="button"
-            onPress={() => onOpen(set)}
-            style={({ pressed }) => [styles.setOpenButton, pressed && styles.pressed]}>
-            <View style={styles.setTitleRow}>
-              <Text style={[styles.setTitle, { color: colors.primaryText }]}>
-                Set {set.set_number} · {set.title}
-              </Text>
-              <Badge tone={statusTone(getSetStatus(set))}>{getSetStatus(set)}</Badge>
-            </View>
-            <Text style={[styles.setMeta, { color: colors.secondaryText }]}>
-              {set.questions.length} questions · {new Date(set.created_at).toLocaleDateString()}
-            </Text>
-            <Text style={[styles.setMeta, { color: colors.secondaryText }]}>
-              {set.questions.filter((question) => question.status === 'completed').length} of{' '}
-              {set.questions.length} completed
-            </Text>
-          </Pressable>
-          <Pressable
-            accessibilityLabel={set.bookmarked ? 'Remove bookmark' : 'Bookmark practice set'}
-            accessibilityRole="button"
-            onPress={() => onBookmark(set)}
-            style={({ pressed }) => [styles.bookmarkButton, pressed && styles.pressed]}>
-            <Text style={[styles.bookmarkText, { color: set.bookmarked ? colors.primary : colors.secondaryText }]}>
-              {set.bookmarked ? '★' : '☆'}
-            </Text>
-          </Pressable>
+          <Text style={[styles.setTitle, { color: colors.primaryText }]}>Set {set.set_number}</Text>
+          <Text style={[styles.setMeta, { color: colors.secondaryText }]}>
+            Category: {findCategory(set.config.categoryId)}
+          </Text>
+          <Text style={[styles.setMeta, { color: colors.secondaryText }]}>
+            Topic: {findTopic(set.config.topicId)}
+          </Text>
+          <Text style={[styles.setMeta, { color: colors.secondaryText }]}>
+            Difficulty: {set.config.difficulty}
+          </Text>
+          <Text style={[styles.setMeta, { color: colors.secondaryText }]}>
+            Questions: {set.questions.length}
+          </Text>
+          <View style={styles.buttonRow}>
+            <Button onPress={() => onOpen(set)}>Start</Button>
+            <Button variant="secondary" onPress={() => onDelete(set)}>Delete</Button>
+          </View>
         </View>
       ))}
     </View>
@@ -1401,42 +1165,23 @@ function SelectField({
   );
 }
 
-function ChoicePill({
-  label,
-  selected,
-  onPress,
-}: {
-  label: string;
-  selected: boolean;
-  onPress: () => void;
-}) {
-  const { styles, colors } = usePracticeStyles();
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityState={{ selected }}
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.choicePill,
-        {
-          backgroundColor: selected ? colors.primarySoft : colors.surfaceMuted,
-          borderColor: selected ? colors.primary : colors.border,
-        },
-        pressed && styles.pressed,
-      ]}>
-      <Text style={[styles.choiceText, { color: selected ? colors.primary : colors.primaryText }]}>
-        {label}
-      </Text>
-    </Pressable>
-  );
-}
-
 function usePracticeStyles() {
   const { colors } = useAppTheme();
   const styles = useMemo(
     () =>
       StyleSheet.create({
         screen: { flex: 1, minWidth: 0, gap: 18 },
+        backButton: {
+          minHeight: 44,
+          alignSelf: 'flex-start',
+          borderWidth: 1,
+          borderRadius: DesignTokens.radius.pill,
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 6,
+          paddingHorizontal: 14,
+        },
+        backButtonText: { fontSize: 13, fontWeight: '700' },
         topActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
         topActionButton: { flexGrow: 1, minWidth: 160 },
         metricGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
@@ -1474,6 +1219,8 @@ function usePracticeStyles() {
         buttonContent: { flexDirection: 'row', alignItems: 'center', gap: 10 },
         buttonText: { fontSize: 14, fontWeight: '700' },
         helperText: { fontSize: 12, lineHeight: 18 },
+        errorText: { fontSize: 13, lineHeight: 19, fontWeight: '600' },
+        buttonRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
         notice: {
           borderWidth: 1,
           borderRadius: DesignTokens.radius.small,
@@ -1494,12 +1241,11 @@ function usePracticeStyles() {
         },
         choiceText: { fontSize: 12, fontWeight: '700' },
         setList: { gap: 10 },
-        setItem: {
+        setCard: {
           borderWidth: 1,
           borderRadius: DesignTokens.radius.small,
-          flexDirection: 'row',
-          alignItems: 'center',
-          gap: 8,
+          gap: 6,
+          padding: 13,
         },
         setOpenButton: { flex: 1, minWidth: 0, gap: 6, padding: 13 },
         setTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
@@ -1525,8 +1271,7 @@ function usePracticeStyles() {
         emptyTitle: { fontSize: 17, fontWeight: '700' },
         workspace: { gap: 16 },
         desktopWorkspace: { flexDirection: 'row', alignItems: 'flex-start' },
-        sqlColumn: { flex: 6, minWidth: 0, gap: 16 },
-        desktopEvaluator: { flex: 4, minWidth: 0, maxHeight: 780 },
+        sqlColumn: { flex: 1, minWidth: 0, gap: 16 },
         workspaceHeading: { flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
         headingCopy: { flex: 1, gap: 8 },
         eyebrow: { fontSize: 11, fontWeight: '800', letterSpacing: 0.7 },
@@ -1575,84 +1320,10 @@ function usePracticeStyles() {
         workspaceActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 9 },
         resultSummary: { fontSize: 13, fontWeight: '700', marginBottom: 10 },
         sqlError: { borderRadius: 9, padding: 12 },
-        chatMessageViewport: {
-          width: '100%',
-          minWidth: 0,
-          position: 'relative',
-        },
-        chatMessageList: {
-          width: '100%',
-          maxHeight: 320,
-        },
-        chatMessages: {
-          width: '100%',
-          gap: 12,
-          paddingVertical: 4,
-        },
-        chatBubble: {
-          maxWidth: '94%',
-          minWidth: 0,
-          flexShrink: 1,
-          borderWidth: 1,
-          borderRadius: 14,
-          overflow: 'hidden',
-          padding: 8,
-        },
-        chatUserText: { fontSize: 14, lineHeight: 21 },
-        jumpToLatest: {
-          position: 'absolute',
-          alignSelf: 'center',
-          bottom: 8,
-          width: 40,
-          height: 40,
-          borderRadius: 20,
-          borderWidth: 1,
-          alignItems: 'center',
-          justifyContent: 'center',
-        },
-        chatInputRow: {
-          minHeight: 56,
-          flexDirection: 'row',
-          alignItems: 'flex-end',
-          gap: 8,
-          marginTop: 12,
-          padding: 6,
-          borderWidth: 1,
-          borderRadius: 28,
-        },
-        chatSendButton: {
-          width: 42,
-          height: 42,
-          borderRadius: 21,
-          alignItems: 'center',
-          justifyContent: 'center',
-        },
-        chatSendPressed: { opacity: 0.82 },
-        chatSendDisabled: { opacity: 0.5 },
-        chatInput: {
-          flex: 1,
-          minWidth: 0,
-          minHeight: 42,
-          maxHeight: 110,
-          paddingHorizontal: 12,
-          paddingVertical: 8,
-          fontSize: 14,
-          lineHeight: 20,
-        },
       }),
     [colors],
   );
   return { styles, colors };
-}
-
-function getSetStatus(set: PracticeSetRecord): SetFilter {
-  if (set.questions.some((question) => question.status === 'needs_review')) {
-    return 'Needs Review';
-  }
-  if (set.questions.length > 0 && set.questions.every((question) => question.status === 'completed')) {
-    return 'Completed';
-  }
-  return 'In Progress';
 }
 
 function statusLabel(status: SqlPracticeStatus) {
@@ -1666,15 +1337,26 @@ function statusLabel(status: SqlPracticeStatus) {
   }
 }
 
-function statusTone(status: SqlPracticeStatus | SetFilter): 'blue' | 'green' | 'amber' | 'neutral' {
-  if (status === 'Completed' || status === 'completed') {
+function findCategory(id: string) {
+  return sqlLearningCategories.find((categoryItem) => categoryItem.id === id)?.title ?? 'SQL';
+}
+
+function findTopic(id: string) {
+  for (const categoryItem of sqlLearningCategories) {
+    const topicItem = categoryItem.topics.find((candidate) => candidate.id === id);
+    if (topicItem) {
+      return topicItem.title;
+    }
+  }
+  return id;
+}
+
+function statusTone(status: SqlPracticeStatus): 'blue' | 'green' | 'amber' {
+  if (status === 'completed') {
     return 'green';
   }
-  if (status === 'Needs Review' || status === 'needs_review') {
+  if (status === 'needs_review') {
     return 'amber';
-  }
-  if (status === 'Bookmarked') {
-    return 'neutral';
   }
   return 'blue';
 }

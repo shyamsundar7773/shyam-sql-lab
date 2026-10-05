@@ -20,10 +20,19 @@ import { useAuth } from '@/contexts/auth-context';
 import { useAppTheme } from '@/contexts/theme-context';
 import {
   askPracticeEvaluator,
-  type PracticeChatMessage,
   type PracticeLearningContext,
 } from '@/lib/api';
-import { getPracticeLearningContext, type PracticePathIds } from '@/lib/sql-practice-notes';
+import {
+  buildPracticeAttemptReviewPrompt,
+  getPracticeEvaluatorBackRoute,
+  getPracticeEvaluatorExecution,
+  getPendingPracticeEvaluatorUserMessage,
+  getPracticeEvaluatorRequestHistory,
+  getPracticeLearningContext,
+  type PracticeEvaluatorExecution,
+  type PracticeNotesAttempt,
+  type PracticePathIds,
+} from '@/lib/sql-practice-notes';
 import { supabase } from '@/lib/supabase';
 import type {
   PracticeConversationMessage,
@@ -32,7 +41,7 @@ import type {
 } from '@/types/sql-practice';
 
 const firstPrompt =
-  'Please review my current SQL approach for this question. Explain what is correct, what could improve, and why.';
+  'I have not run SQL for my current draft yet. Please help me understand the question with a concise hint, without evaluating an answer or giving the full solution.';
 
 type PracticeSetHeader = {
   id: string;
@@ -41,10 +50,19 @@ type PracticeSetHeader = {
   config: PracticePathIds;
 };
 
+type PracticeAttempt = {
+  id: string;
+  question_id: string;
+  sql: string;
+  execution_result: SqlPracticeExecutionResult | null;
+  created_at: string;
+};
+
 export default function PracticeEvaluatorScreen() {
-  const { setId, questionId } = useLocalSearchParams<{
+  const { setId, questionId, attemptId } = useLocalSearchParams<{
     setId: string;
     questionId: string;
+    attemptId?: string;
   }>();
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -52,21 +70,27 @@ export default function PracticeEvaluatorScreen() {
   const { session } = useAuth();
   const [question, setQuestion] = useState<PracticeQuestionRecord | null>(null);
   const [set, setSet] = useState<PracticeSetHeader | null>(null);
+  const [attempt, setAttempt] = useState<PracticeAttempt | null>(null);
   const [messages, setMessages] = useState<PracticeConversationMessage[]>([]);
   const [messageDraft, setMessageDraft] = useState('');
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
-  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const messageListRef = useRef<ScrollView>(null);
   const latestMessagesRef = useRef<PracticeConversationMessage[]>([]);
   const sendLock = useRef(false);
   const isAtLatestMessage = useRef(true);
   const learningContext = set ? getPracticeLearningContext(set.config) : null;
+  const execution = question
+    ? getPracticeEvaluatorExecution(
+        question.id,
+        question.draft_sql,
+        attempt as PracticeNotesAttempt | null,
+      )
+    : ({ status: 'not_executed' } satisfies PracticeEvaluatorExecution);
 
   const scrollToLatestMessage = useCallback(() => {
     isAtLatestMessage.current = true;
-    setShowJumpToLatest(false);
     messageListRef.current?.scrollToEnd({ animated: true });
   }, []);
 
@@ -80,6 +104,7 @@ export default function PracticeEvaluatorScreen() {
       message: string,
       currentQuestion: PracticeQuestionRecord,
       context: PracticeLearningContext,
+      currentExecution: PracticeEvaluatorExecution,
       history = latestMessagesRef.current,
     ) => {
       if (
@@ -94,16 +119,24 @@ export default function PracticeEvaluatorScreen() {
       setSending(true);
       setError('');
       try {
-        const userResult = await supabase
-          .from('practice_evaluator_messages')
-          .insert({ question_id: currentQuestion.id, role: 'user', content: message.trim() })
-          .select('*')
-          .single();
-        if (userResult.error) {
-          throw userResult.error;
+        const trimmedMessage = message.trim();
+        const pendingMessage = getPendingPracticeEvaluatorUserMessage(history, trimmedMessage);
+        let withUserMessage = history;
+        let requestHistory = history;
+        if (pendingMessage) {
+          requestHistory = history.slice(0, -1);
+        } else {
+          const userResult = await supabase
+            .from('practice_evaluator_messages')
+            .insert({ question_id: currentQuestion.id, role: 'user', content: trimmedMessage })
+            .select('*')
+            .single();
+          if (userResult.error) {
+            throw userResult.error;
+          }
+          withUserMessage = [...history, userResult.data as PracticeConversationMessage];
+          updateMessages(withUserMessage);
         }
-        const withUserMessage = [...history, userResult.data as PracticeConversationMessage];
-        updateMessages(withUserMessage);
         setMessageDraft('');
         requestAnimationFrame(scrollToLatestMessage);
 
@@ -111,12 +144,10 @@ export default function PracticeEvaluatorScreen() {
           accessToken: session.access_token,
           context,
           question: currentQuestion.content,
-          sql: currentQuestion.draft_sql,
-          result: currentQuestion.latest_result as SqlPracticeExecutionResult | null,
-          history: history
-            .slice(-20)
-            .map(({ role, content }): PracticeChatMessage => ({ role, content })),
-          message: message.trim(),
+          draftSql: currentQuestion.draft_sql,
+          execution: currentExecution,
+          history: getPracticeEvaluatorRequestHistory(requestHistory),
+          message: trimmedMessage,
         });
 
         const assistantResult = await supabase
@@ -180,17 +211,72 @@ export default function PracticeEvaluatorScreen() {
         if (!active) {
           return;
         }
-        const loadedQuestion = questionResult.data as unknown as PracticeQuestionRecord;
+        const savedQuestion = questionResult.data as unknown as PracticeQuestionRecord;
+        let selectedAttempt: PracticeAttempt | null = null;
+        let attemptNumber = 0;
+        if (attemptId) {
+          const [attemptResult, attemptCountResult] = await Promise.all([
+            supabase
+              .from('practice_attempts')
+              .select('id,question_id,sql,execution_result,created_at')
+              .eq('question_id', questionId)
+              .eq('id', attemptId)
+              .maybeSingle(),
+            supabase
+              .from('practice_attempts')
+              .select('id', { count: 'exact', head: true })
+              .eq('question_id', questionId),
+          ]);
+          if (attemptResult.error) {
+            throw attemptResult.error;
+          }
+          if (attemptCountResult.error) {
+            throw attemptCountResult.error;
+          }
+          if (!attemptResult.data) {
+            throw new Error('The submitted SQL attempt could not be loaded for this question.');
+          }
+          selectedAttempt = attemptResult.data as PracticeAttempt;
+          attemptNumber = attemptCountResult.count ?? 1;
+        }
+        const loadedQuestion = selectedAttempt
+          ? {
+              ...savedQuestion,
+              draft_sql: savedQuestion.draft_sql,
+              latest_result: selectedAttempt.execution_result,
+            }
+          : { ...savedQuestion, latest_result: null };
         const loadedSet = setResult.data as PracticeSetHeader;
         const loadedMessages = (messagesResult.data ?? []) as unknown as PracticeConversationMessage[];
         setQuestion(loadedQuestion);
         setSet(loadedSet);
+        setAttempt(selectedAttempt);
         updateMessages(loadedMessages);
-        if (loadedMessages.length === 0) {
+        const currentExecution = getPracticeEvaluatorExecution(
+          loadedQuestion.id,
+          loadedQuestion.draft_sql,
+          selectedAttempt as PracticeNotesAttempt | null,
+        );
+        if (currentExecution.status !== 'not_executed') {
+          const reviewPrompt = buildPracticeAttemptReviewPrompt(currentExecution.sql, attemptNumber);
+          const alreadyReviewed = loadedMessages.some(
+            (message) => message.role === 'user' && message.content === reviewPrompt,
+          );
+          if (!alreadyReviewed) {
+            await sendMessage(
+              reviewPrompt,
+              loadedQuestion,
+              getPracticeLearningContext(loadedSet.config),
+              currentExecution,
+              loadedMessages,
+            );
+          }
+        } else if (loadedMessages.length === 0) {
           await sendMessage(
             firstPrompt,
             loadedQuestion,
             getPracticeLearningContext(loadedSet.config),
+            currentExecution,
             [],
           );
         }
@@ -208,7 +294,7 @@ export default function PracticeEvaluatorScreen() {
     return () => {
       active = false;
     };
-  }, [questionId, sendMessage, setId]);
+  }, [attemptId, questionId, sendMessage, setId]);
 
   return (
     <KeyboardAvoidingView
@@ -219,13 +305,15 @@ export default function PracticeEvaluatorScreen() {
           accessibilityLabel="Back to question workspace"
           accessibilityRole="button"
           onPress={() => {
-            if (router.canGoBack()) {
+            if (setId && questionId) {
+              router.replace(getPracticeEvaluatorBackRoute(setId, questionId));
+            } else if (router.canGoBack()) {
               router.back();
             } else {
               router.replace('/sql-practice');
             }
           }}
-          style={styles.backButton}>
+          style={[styles.backButton, { backgroundColor: colors.surface, borderColor: colors.border }]}>
           <SymbolView
             name={{ ios: 'chevron.left', android: 'arrow_back', web: 'arrow_back' }}
             size={21}
@@ -258,7 +346,6 @@ export default function PracticeEvaluatorScreen() {
             const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
             const isNearLatest = contentSize.height - contentOffset.y - layoutMeasurement.height < 48;
             isAtLatestMessage.current = isNearLatest;
-            setShowJumpToLatest(!isNearLatest);
           }}
           scrollEventThrottle={16}
           style={styles.messageScroll}>
@@ -300,22 +387,30 @@ export default function PracticeEvaluatorScreen() {
             </Text>
           ) : null}
         </ScrollView>
-        {showJumpToLatest ? (
+        <View style={styles.scrollControls}>
+          <Pressable
+            accessibilityLabel="Scroll AI conversation to top"
+            accessibilityRole="button"
+            onPress={() => messageListRef.current?.scrollTo({ y: 0, animated: true })}
+            style={[styles.scrollControl, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            <SymbolView
+              name={{ ios: 'arrow.up', android: 'arrow_upward', web: 'arrow_upward' }}
+              size={18}
+              tintColor={colors.primaryText}
+            />
+          </Pressable>
           <Pressable
             accessibilityLabel="Jump to latest message"
             accessibilityRole="button"
             onPress={scrollToLatestMessage}
-            style={[
-              styles.jumpToLatest,
-              { backgroundColor: colors.surface, borderColor: colors.border },
-            ]}>
+            style={[styles.scrollControl, { backgroundColor: colors.surface, borderColor: colors.border }]}>
             <SymbolView
               name={{ ios: 'arrow.down', android: 'arrow_downward', web: 'arrow_downward' }}
               size={18}
               tintColor={colors.primaryText}
             />
           </Pressable>
-        ) : null}
+        </View>
       </View>
 
       <View
@@ -345,7 +440,7 @@ export default function PracticeEvaluatorScreen() {
             disabled={sending || loading || !messageDraft.trim()}
             onPress={() => {
               if (question && learningContext) {
-                void sendMessage(messageDraft, question, learningContext);
+                void sendMessage(messageDraft, question, learningContext, execution);
               }
             }}
             style={({ pressed }) => [
@@ -385,7 +480,9 @@ const styles = StyleSheet.create({
   },
   backButton: {
     width: 42,
-    height: 44,
+    height: 42,
+    borderWidth: 1,
+    borderRadius: 21,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -441,10 +538,13 @@ const styles = StyleSheet.create({
     alignSelf: 'flex-start',
     marginVertical: 6,
   },
-  jumpToLatest: {
+  scrollControls: {
     position: 'absolute',
     bottom: 14,
-    alignSelf: 'center',
+    right: 12,
+    gap: 8,
+  },
+  scrollControl: {
     width: 42,
     height: 42,
     borderRadius: 21,
