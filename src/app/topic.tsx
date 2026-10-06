@@ -14,6 +14,7 @@ import {
   type NativeScrollEvent,
   type NativeSyntheticEvent,
   type ListRenderItem,
+  type TextInputKeyPressEvent,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -477,6 +478,18 @@ function TopicConversation({
     }
   }, [addAssistantReply, conversation, draft, messages, selectedSubtopic, session?.access_token]);
 
+  const handleWebSubmitKey = useCallback((event: TextInputKeyPressEvent) => {
+    const nativeEvent = event.nativeEvent;
+    if (
+      nativeEvent.key !== 'Enter' ||
+      ('shiftKey' in nativeEvent && nativeEvent.shiftKey === true)
+    ) {
+      return;
+    }
+    event.preventDefault();
+    void submitQuestion();
+  }, [submitQuestion]);
+
   const retryReply = useCallback(async () => {
     if (!retryRequest || !conversation || sendingRef.current) {
       return;
@@ -736,9 +749,11 @@ function TopicConversation({
           maxLength={4000}
           multiline
           onChangeText={setDraft}
+          onKeyPress={Platform.OS === 'web' ? handleWebSubmitKey : undefined}
           onSubmitEditing={() => void submitQuestion()}
           placeholder={`Ask anything about ${selectedSubtopic.title}...`}
           returnKeyType="send"
+          submitBehavior="submit"
           style={stylesForTheme.input}
           value={draft}
         />

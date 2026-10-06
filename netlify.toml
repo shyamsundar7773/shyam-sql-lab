@@ -3,6 +3,21 @@ command = "npx expo export --platform web"
 publish = "dist"
 
 [[redirects]]
+from = "/notes/add"
+to = "/notes/add.html"
+status = 200
+
+[[redirects]]
+from = "/notes/browse"
+to = "/notes/browse.html"
+status = 200
+
+[[redirects]]
+from = "/notes/bulk-import"
+to = "/notes/bulk-import.html"
+status = 200
+
+[[redirects]]
 from = "/:route"
 to = "/:route.html"
 status = 200

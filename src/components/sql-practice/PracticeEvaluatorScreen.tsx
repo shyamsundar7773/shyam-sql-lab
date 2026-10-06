@@ -11,6 +11,7 @@ import {
   Text,
   TextInput,
   View,
+  type TextInputKeyPressEvent,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -173,6 +174,24 @@ export default function PracticeEvaluatorScreen() {
     },
     [scrollToLatestMessage, session?.access_token],
   );
+
+  const submitDraft = useCallback(() => {
+    if (!loading && !sending && question && learningContext) {
+      void sendMessage(messageDraft, question, learningContext, execution);
+    }
+  }, [execution, learningContext, loading, messageDraft, question, sendMessage, sending]);
+
+  const handleWebSubmitKey = useCallback((event: TextInputKeyPressEvent) => {
+    const nativeEvent = event.nativeEvent;
+    if (
+      nativeEvent.key !== 'Enter' ||
+      ('shiftKey' in nativeEvent && nativeEvent.shiftKey === true)
+    ) {
+      return;
+    }
+    event.preventDefault();
+    submitDraft();
+  }, [submitDraft]);
 
   useEffect(() => {
     let active = true;
@@ -429,20 +448,20 @@ export default function PracticeEvaluatorScreen() {
             multiline
             value={messageDraft}
             onChangeText={setMessageDraft}
+            onKeyPress={Platform.OS === 'web' ? handleWebSubmitKey : undefined}
+            onSubmitEditing={submitDraft}
             onFocus={() => requestAnimationFrame(() => messageListRef.current?.scrollToEnd({ animated: true }))}
             placeholder="Ask about this SQL…"
             placeholderTextColor={colors.mutedText}
+            returnKeyType="send"
+            submitBehavior="submit"
             style={[styles.input, { color: colors.primaryText }]}
           />
           <Pressable
             accessibilityLabel="Send message"
             accessibilityRole="button"
             disabled={sending || loading || !messageDraft.trim()}
-            onPress={() => {
-              if (question && learningContext) {
-                void sendMessage(messageDraft, question, learningContext, execution);
-              }
-            }}
+            onPress={submitDraft}
             style={({ pressed }) => [
               styles.sendButton,
               { backgroundColor: colors.primary },
