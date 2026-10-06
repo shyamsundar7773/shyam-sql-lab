@@ -128,11 +128,17 @@ test("Topic Chat accepts a normal subtopic-grounded follow-up without practice q
     supabaseUrl: process.env.SUPABASE_URL,
     supabaseKey: process.env.SUPABASE_PUBLISHABLE_KEY,
     groqKey: process.env.GROQ_API_KEY,
+    groqModel: process.env.GROQ_MODEL,
   };
-  const groqRequests: Array<{ messages: Array<{ role: string; content: string }> }> = [];
+  const groqRequests: Array<{
+    model: string;
+    max_completion_tokens: number;
+    messages: Array<{ role: string; content: string }>;
+  }> = [];
   process.env.SUPABASE_URL = "https://supabase.test";
   process.env.SUPABASE_PUBLISHABLE_KEY = "test-publishable-key";
   process.env.GROQ_API_KEY = "test-groq-key";
+  process.env.GROQ_MODEL = "openai/gpt-oss-120b";
   globalThis.fetch = async (input, init) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     if (url.startsWith(baseUrl)) {
@@ -143,10 +149,20 @@ test("Topic Chat accepts a normal subtopic-grounded follow-up without practice q
     }
     if (url === "https://api.groq.com/openai/v1/chat/completions") {
       groqRequests.push(
-        JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> },
+        JSON.parse(String(init?.body)) as {
+          model: string;
+          max_completion_tokens: number;
+          messages: Array<{ role: string; content: string }>;
+        },
       );
       return new Response(
-        JSON.stringify({ choices: [{ message: { content: "Hi! What would you like to learn?" } }] }),
+        JSON.stringify({
+          choices: [{
+            message: { content: "Hi! What would you like to learn?" },
+            finish_reason: "stop",
+          }],
+          usage: { completion_tokens: 10 },
+        }),
         { status: 200 },
       );
     }
@@ -170,7 +186,10 @@ test("Topic Chat accepts a normal subtopic-grounded follow-up without practice q
           source: "user",
           content: "Saved note relevant to selecting columns.",
         }],
-        history: [],
+        history: [
+          { role: "user", content: "What is a column?" },
+          { role: "assistant", content: "A column stores one kind of value in a table." },
+        ],
         question: "hi",
       }),
     });
@@ -178,8 +197,11 @@ test("Topic Chat accepts a normal subtopic-grounded follow-up without practice q
     assert.deepEqual(await response.json(), {
       reply: "Hi! What would you like to learn?",
       mode: "ai",
+      incomplete: false,
     });
     assert.equal(groqRequests.length, 1);
+    assert.equal(groqRequests[0].model, "openai/gpt-oss-120b");
+    assert.equal(groqRequests[0].max_completion_tokens, 4_096);
     assert.match(groqRequests[0].messages[0].content, /category_id=sql-foundations/);
     assert.match(groqRequests[0].messages[0].content, /topic_id=select-statements/);
     assert.match(groqRequests[0].messages[0].content, /subtopic_id=selecting-columns/);
@@ -192,7 +214,11 @@ test("Topic Chat accepts a normal subtopic-grounded follow-up without practice q
       groqRequests[0].messages[0].content.includes("Client lesson must not become authoritative"),
       false,
     );
-    assert.equal(groqRequests[0].messages.at(-1)?.content, "hi");
+    assert.deepEqual(groqRequests[0].messages.slice(-3), [
+      { role: "user", content: "What is a column?" },
+      { role: "assistant", content: "A column stores one kind of value in a table." },
+      { role: "user", content: "hi" },
+    ]);
 
     const newCategoryResponse = await fetch(`${baseUrl}/api/learning-chat`, {
       method: "POST",
@@ -260,6 +286,142 @@ test("Topic Chat accepts a normal subtopic-grounded follow-up without practice q
     else process.env.SUPABASE_PUBLISHABLE_KEY = previousEnvironment.supabaseKey;
     if (previousEnvironment.groqKey === undefined) delete process.env.GROQ_API_KEY;
     else process.env.GROQ_API_KEY = previousEnvironment.groqKey;
+    if (previousEnvironment.groqModel === undefined) delete process.env.GROQ_MODEL;
+    else process.env.GROQ_MODEL = previousEnvironment.groqModel;
+  }
+});
+
+test("Topic Chat detects output limits and continues from the saved reply", async () => {
+  const originalFetch = globalThis.fetch;
+  const previousEnvironment = {
+    supabaseUrl: process.env.SUPABASE_URL,
+    supabaseKey: process.env.SUPABASE_PUBLISHABLE_KEY,
+    groqKey: process.env.GROQ_API_KEY,
+    groqModel: process.env.GROQ_MODEL,
+  };
+  const providerReply = `Partial explanation:\n\n${"Each row represents one order. ".repeat(180)}`;
+  const continuationReply = "That completes the explanation.";
+  const providerResponses = [
+    { content: providerReply, finishReason: "length" },
+    { content: continuationReply, finishReason: "stop" },
+  ];
+  const groqRequests: Array<{
+    model: string;
+    max_completion_tokens: number;
+    messages: Array<{ role: string; content: string }>;
+  }> = [];
+  process.env.SUPABASE_URL = "https://supabase.test";
+  process.env.SUPABASE_PUBLISHABLE_KEY = "test-publishable-key";
+  process.env.GROQ_API_KEY = "test-groq-key";
+  process.env.GROQ_MODEL = "openai/gpt-oss-120b";
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url.startsWith(baseUrl)) {
+      return originalFetch(input, init);
+    }
+    if (url.endsWith("/auth/v1/user")) {
+      return new Response(JSON.stringify({ id: "test-user" }), { status: 200 });
+    }
+    if (url === "https://api.groq.com/openai/v1/chat/completions") {
+      groqRequests.push(JSON.parse(String(init?.body)) as {
+        model: string;
+        max_completion_tokens: number;
+        messages: Array<{ role: string; content: string }>;
+      });
+      const next = providerResponses.shift();
+      if (!next) {
+        throw new Error("Unexpected extra Topic Chat provider request.");
+      }
+      return new Response(JSON.stringify({
+        choices: [{
+          message: { content: next.content },
+          finish_reason: next.finishReason,
+        }],
+        usage: { completion_tokens: next.finishReason === "length" ? 4_096 : 8 },
+      }), { status: 200 });
+    }
+    throw new Error(`Unexpected outbound request: ${url}`);
+  };
+
+  try {
+    const requestHeaders = {
+      Authorization: ["Bearer", "test-token"].join(" "),
+      "Content-Type": "application/json",
+    };
+    const question = "Explain how to count orders by day.";
+    const firstResponse = await fetch(`${baseUrl}/api/learning-chat`, {
+      method: "POST",
+      headers: requestHeaders,
+      body: JSON.stringify({
+        categoryId: "sql-foundations",
+        topicId: "select-statements",
+        subtopicId: "selecting-columns",
+        history: [],
+        question,
+      }),
+    });
+    assert.equal(firstResponse.status, 200);
+    const firstResult = await firstResponse.json() as {
+      reply: string;
+      mode: string;
+      incomplete: boolean;
+    };
+    assert.equal(firstResult.mode, "ai");
+    assert.equal(firstResult.incomplete, true);
+    assert.equal(
+      firstResult.reply,
+      `${providerReply}\n\n*This response reached the output limit and may be incomplete. Ask me to continue from where I stopped.*`,
+    );
+    assert.ok(firstResult.reply.length > 4_000);
+
+    const continuationResponse = await fetch(`${baseUrl}/api/learning-chat`, {
+      method: "POST",
+      headers: requestHeaders,
+      body: JSON.stringify({
+        categoryId: "sql-foundations",
+        topicId: "select-statements",
+        subtopicId: "selecting-columns",
+        history: [
+          { role: "user", content: question },
+          { role: "assistant", content: firstResult.reply },
+        ],
+        question: "continue",
+      }),
+    });
+    assert.equal(continuationResponse.status, 200);
+    assert.deepEqual(await continuationResponse.json(), {
+      reply: continuationReply,
+      mode: "ai",
+      incomplete: false,
+    });
+
+    assert.equal(groqRequests.length, 2);
+    assert.ok(groqRequests.every((requestBody) =>
+      requestBody.model === "openai/gpt-oss-120b",
+    ));
+    assert.ok(groqRequests.every((requestBody) =>
+      requestBody.max_completion_tokens === 4_096,
+    ));
+    const continuationMessages = groqRequests[1].messages;
+    assert.match(continuationMessages[0].content, /continue directly from the point where that reply stopped/i);
+    assert.match(continuationMessages[0].content, /category_id=sql-foundations/);
+    assert.match(continuationMessages[0].content, /topic_id=select-statements/);
+    assert.match(continuationMessages[0].content, /subtopic_id=selecting-columns/);
+    assert.deepEqual(continuationMessages.slice(-3), [
+      { role: "user", content: question },
+      { role: "assistant", content: firstResult.reply },
+      { role: "user", content: "continue" },
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousEnvironment.supabaseUrl === undefined) delete process.env.SUPABASE_URL;
+    else process.env.SUPABASE_URL = previousEnvironment.supabaseUrl;
+    if (previousEnvironment.supabaseKey === undefined) delete process.env.SUPABASE_PUBLISHABLE_KEY;
+    else process.env.SUPABASE_PUBLISHABLE_KEY = previousEnvironment.supabaseKey;
+    if (previousEnvironment.groqKey === undefined) delete process.env.GROQ_API_KEY;
+    else process.env.GROQ_API_KEY = previousEnvironment.groqKey;
+    if (previousEnvironment.groqModel === undefined) delete process.env.GROQ_MODEL;
+    else process.env.GROQ_MODEL = previousEnvironment.groqModel;
   }
 });
 

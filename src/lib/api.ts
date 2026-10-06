@@ -51,6 +51,7 @@ export type TopicChatRequest = {
 export type TopicChatResponse = {
   reply: string;
   mode: 'ai' | 'development-fallback';
+  incomplete?: boolean;
 };
 
 export type PracticeGenerationOptions = {
@@ -376,15 +377,20 @@ export async function askTopicQuestion({
   }
 
   if (
-    typeof result !== 'object' ||
-    result === null ||
-    !('reply' in result) ||
+    !isRecord(result) ||
     typeof result.reply !== 'string' ||
-    !('mode' in result) ||
-    (result.mode !== 'ai' && result.mode !== 'development-fallback')
+    (result.mode !== 'ai' && result.mode !== 'development-fallback') ||
+    ('incomplete' in result && typeof result.incomplete !== 'boolean')
   ) {
     throw new Error('The learning chat API returned an unexpected response.');
   }
 
-  return { reply: result.reply, mode: result.mode };
+  const incomplete = result.incomplete === true;
+  if (process.env.NODE_ENV === 'development') {
+    console.info('[Topic Chat response diagnostic]', {
+      replyCharacters: result.reply.length,
+      incomplete,
+    });
+  }
+  return { reply: result.reply, mode: result.mode, incomplete };
 }

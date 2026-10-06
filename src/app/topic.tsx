@@ -435,7 +435,7 @@ function TopicConversation({
     const history = messages
       .filter((message) => message.role === 'user' || message.role === 'assistant')
       .slice(-20)
-      .map(({ role, content }) => ({ role, content: content.slice(0, 4000) }));
+      .map(({ role, content }) => ({ role, content: content.slice(-12_000) }));
     let request: RetryRequest | null = null;
 
     try {

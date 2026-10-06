@@ -86,20 +86,32 @@ test('Topic Chat request preserves its selected canonical subtopic ID', async ()
   clientEnv.apiUrl = 'https://chat-api.test';
   globalThis.fetch = async (_input, init) => {
     requestBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
-    return new Response(JSON.stringify({ reply: 'Here is the explanation.', mode: 'ai' }), {
+    return new Response(JSON.stringify({
+      reply: 'Here is the explanation.',
+      mode: 'ai',
+      incomplete: false,
+    }), {
       status: 200,
     });
   };
 
   try {
-    await askTopicQuestion({
+    const normalResponse = await askTopicQuestion({
       accessToken: 'test-token',
       categoryId: 'data-querying',
       topicId: 'aggregations',
       subtopicId: 'group-by-basics',
       savedLearningNotes: [],
-      history: [],
+      history: [
+        { role: 'user', content: 'What is a group?' },
+        { role: 'assistant', content: 'A group contains rows with matching values.' },
+      ],
       question: 'How does GROUP BY work?',
+    });
+    assert.deepEqual(normalResponse, {
+      reply: 'Here is the explanation.',
+      mode: 'ai',
+      incomplete: false,
     });
     await askTopicQuestion({
       accessToken: 'test-token',
@@ -114,6 +126,10 @@ test('Topic Chat request preserves its selected canonical subtopic ID', async ()
     assert.equal(requestBodies[0]?.topicId, 'aggregations');
     assert.equal(requestBodies[0]?.subtopicId, 'group-by-basics');
     assert.equal(requestBodies[0]?.question, 'How does GROUP BY work?');
+    assert.deepEqual(requestBodies[0]?.history, [
+      { role: 'user', content: 'What is a group?' },
+      { role: 'assistant', content: 'A group contains rows with matching values.' },
+    ]);
     assert.equal('moduleId' in requestBodies[0], false);
     assert.equal('officialContent' in requestBodies[0], false);
     assert.equal('category' in requestBodies[0], false);
@@ -140,6 +156,35 @@ test('Topic Chat request preserves its selected canonical subtopic ID', async ()
       /valid canonical Category, Topic, and Subtopic/,
     );
     assert.equal(requestBodies.length, 2);
+  } finally {
+    globalThis.fetch = previousFetch;
+    clientEnv.apiUrl = previousApiUrl;
+  }
+});
+
+test('Topic Chat preserves long response text and provider truncation metadata', async () => {
+  const previousApiUrl = clientEnv.apiUrl;
+  const previousFetch = globalThis.fetch;
+  const reply = `${'The result contains the requested daily counts. '.repeat(160)}\n\n*This response reached the output limit and may be incomplete. Ask me to continue from where I stopped.*`;
+  clientEnv.apiUrl = 'https://chat-api.test';
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    reply,
+    mode: 'ai',
+    incomplete: true,
+  }), { status: 200 });
+
+  try {
+    const result = await askTopicQuestion({
+      accessToken: 'test-token',
+      categoryId: 'sql-foundations',
+      topicId: 'select-statements',
+      subtopicId: 'selecting-columns',
+      savedLearningNotes: [],
+      history: [],
+      question: 'Explain the result in detail.',
+    });
+    assert.deepEqual(result, { reply, mode: 'ai', incomplete: true });
+    assert.ok(result.reply.length > 4_000);
   } finally {
     globalThis.fetch = previousFetch;
     clientEnv.apiUrl = previousApiUrl;
