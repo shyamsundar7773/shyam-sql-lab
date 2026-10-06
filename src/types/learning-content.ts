@@ -16,6 +16,8 @@ export type LearningMaterial = {
 export type Subtopic = LearningMaterial & {
   id: string;
   title: string;
+  definition?: string;
+  lessonTitle?: string;
 };
 
 export type Topic = LearningMaterial & {

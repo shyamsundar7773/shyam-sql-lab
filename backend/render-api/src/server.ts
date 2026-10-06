@@ -322,11 +322,12 @@ app.post("/api/notes/analyze", async (request, response) => {
 }
 
 app.post("/api/learning-chat", async (request, response) => {
-  const input = parseChatRequest(request.body);
-  if (!input) {
-    response.status(400).json({ error: "The topic, lesson, history, and question are required." });
+  const parsed = parseChatRequest(request.body);
+  if (!parsed.ok) {
+    response.status(400).json({ code: parsed.code, error: parsed.error });
     return;
   }
+  const input = parsed.input;
 
   const authorization = request.header("authorization");
   const accessToken = authorization?.match(/^Bearer\s+(.+)$/i)?.[1];
@@ -690,9 +691,14 @@ type ChatRequest = {
   category: string;
   topic: string;
   officialContent: string;
+  savedLearningNotes: { title: string; source: string; content: string }[];
   history: ChatHistoryItem[];
   question: string;
 };
+
+type ChatRequestParseResult =
+  | { ok: true; input: ChatRequest }
+  | { ok: false; code: "INVALID_CHAT_REQUEST" | "INVALID_CURRICULUM_PATH"; error: string };
 
 type PracticeGenerationRequest = {
   categoryId: string;
@@ -1549,46 +1555,42 @@ function getErrorMessage(error: unknown, fallback: string) {
   return error instanceof Error && error.message ? error.message : fallback;
 }
 
-function parseChatRequest(value: unknown): ChatRequest | null {
+function parseChatRequest(value: unknown): ChatRequestParseResult {
   if (!isRecord(value)) {
-    return null;
+    return {
+      ok: false,
+      code: "INVALID_CHAT_REQUEST",
+      error: "Provide categoryId, topicId, subtopicId, history, and question.",
+    };
   }
 
-  const {
-    categoryId,
-    topicId,
-    subtopicId,
-    category,
-    topic,
-    officialContent,
-    history,
-    question,
-  } = value;
+  const { categoryId, topicId, subtopicId, history, question, savedLearningNotes } = value;
   if (
     !isNonEmptyString(categoryId, 160) ||
     !isNonEmptyString(topicId, 160) ||
     !isNonEmptyString(subtopicId, 160) ||
-    !isNonEmptyString(category, 160) ||
-    !isNonEmptyString(topic, 160) ||
-    !isNonEmptyString(officialContent, maximumOfficialContentLength) ||
     !isNonEmptyString(question, maximumHistoryMessageLength) ||
     !Array.isArray(history) ||
-    history.length > maximumHistoryItems
+    history.length > maximumHistoryItems ||
+    (savedLearningNotes !== undefined &&
+      (!Array.isArray(savedLearningNotes) || savedLearningNotes.length > 3))
   ) {
-    return null;
+    return {
+      ok: false,
+      code: "INVALID_CHAT_REQUEST",
+      error: "Provide valid canonical IDs, up to 20 history messages, and a question.",
+    };
   }
 
   const officialCategory = sqlLearningCategories.find((item) => item.id === categoryId);
   const officialTopic = officialCategory?.topics.find((item) => item.id === topicId);
   const officialSubtopic = officialTopic?.subtopics.find((item) => item.id === subtopicId);
-  if (
-    !officialCategory ||
-    !officialTopic ||
-    !officialSubtopic ||
-    officialCategory.title !== category ||
-    officialTopic.title !== topic
-  ) {
-    return null;
+  if (!officialCategory || !officialTopic || !officialSubtopic) {
+    return {
+      ok: false,
+      code: "INVALID_CURRICULUM_PATH",
+      error: "The selected categoryId, topicId, and subtopicId do not resolve to one canonical curriculum path.",
+    };
   }
 
   const validatedHistory: ChatHistoryItem[] = [];
@@ -1598,20 +1600,72 @@ function parseChatRequest(value: unknown): ChatRequest | null {
       (item.role !== "user" && item.role !== "assistant") ||
       !isNonEmptyString(item.content, maximumHistoryMessageLength)
     ) {
-      return null;
+      return {
+        ok: false,
+        code: "INVALID_CHAT_REQUEST",
+        error: "Each history item must have a valid role and non-empty content.",
+      };
     }
     validatedHistory.push({ role: item.role, content: item.content.trim() });
   }
 
+  const notes: { title: string; source: string; content: string }[] = [];
+  if (Array.isArray(savedLearningNotes)) {
+    for (const note of savedLearningNotes) {
+      if (
+        !isRecord(note) ||
+        !isNonEmptyString(note.title, 200) ||
+        !isNonEmptyString(note.source, 100) ||
+        !isNonEmptyString(note.content, 1_200)
+      ) {
+        return {
+          ok: false,
+          code: "INVALID_CHAT_REQUEST",
+          error: "Saved learning notes must contain a title, source, and non-empty content.",
+        };
+      }
+      notes.push({
+        title: note.title.trim(),
+        source: note.source.trim(),
+        content: note.content.trim(),
+      });
+    }
+  }
+
+  const definition =
+    officialSubtopic.definition ?? officialSubtopic.explanation[0] ?? "";
+  const canonicalContent = {
+    canonicalPath: {
+      categoryId: officialCategory.id,
+      topicId: officialTopic.id,
+      subtopicId: officialSubtopic.id,
+    },
+    officialLesson: {
+      title: officialSubtopic.lessonTitle ?? officialSubtopic.title,
+      definition,
+      explanation: definition ? [definition] : officialSubtopic.explanation,
+      examples: officialSubtopic.examples,
+      keyPoints: officialSubtopic.keyPoints,
+      commonMistakes: officialSubtopic.commonMistakes,
+      practiceQuestions: officialSubtopic.practiceQuestions,
+      interviewQuestions: officialSubtopic.interviewQuestions,
+    },
+    savedLearningNotes: notes,
+  };
+
   return {
-    categoryId: officialCategory.id,
-    topicId: officialTopic.id,
-    subtopicId: officialSubtopic.id,
-    category: category.trim(),
-    topic: topic.trim(),
-    officialContent: officialContent.trim(),
-    history: validatedHistory,
-    question: question.trim(),
+    ok: true,
+    input: {
+      categoryId: officialCategory.id,
+      topicId: officialTopic.id,
+      subtopicId: officialSubtopic.id,
+      category: officialCategory.title,
+      topic: officialTopic.title,
+      officialContent: JSON.stringify(canonicalContent),
+      savedLearningNotes: notes,
+      history: validatedHistory,
+      question: question.trim(),
+    },
   };
 }
 

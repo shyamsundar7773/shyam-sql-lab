@@ -39,9 +39,11 @@ export type TopicChatRequest = {
   categoryId: string;
   topicId: string;
   subtopicId: string;
-  category: string;
-  topic: string;
-  officialContent: string;
+  savedLearningNotes: {
+    title: string;
+    source: string;
+    content: string;
+  }[];
   history: TopicChatHistoryItem[];
   question: string;
 };
@@ -307,9 +309,7 @@ export async function askTopicQuestion({
   categoryId,
   topicId,
   subtopicId,
-  category,
-  topic,
-  officialContent,
+  savedLearningNotes,
   history,
   question,
 }: TopicChatRequest): Promise<TopicChatResponse> {
@@ -317,11 +317,7 @@ export async function askTopicQuestion({
     throw new Error('The learning chat API is not configured. Set EXPO_PUBLIC_API_URL.');
   }
   const context = getSubtopicContext(categoryId, topicId, subtopicId);
-  if (
-    !context ||
-    context.category.title !== category ||
-    context.topic.title !== topic
-  ) {
+  if (!context) {
     throw new Error('Choose a valid canonical Category, Topic, and Subtopic before asking a learning question.');
   }
 
@@ -337,9 +333,7 @@ export async function askTopicQuestion({
       categoryId,
       topicId,
       subtopicId,
-      category: context.category.title,
-      topic: context.topic.title,
-      officialContent,
+      savedLearningNotes,
       history,
       question,
     }),
@@ -362,7 +356,7 @@ export async function askTopicQuestion({
       subtopicId,
       conversationReady: true,
       messagePresent: Boolean(question.trim()),
-      lessonPresent: Boolean(officialContent.trim()),
+      savedNoteCount: savedLearningNotes.length,
       historyCount: history.length,
       status: response.status,
       validationError: responseError?.slice(0, 200) ?? undefined,
@@ -370,11 +364,12 @@ export async function askTopicQuestion({
   }
   if (!response.ok) {
     if (
-      responseError &&
-      /topic,\s*lesson,\s*history,\s*and\s*questions?\s+are\s+required/i.test(responseError)
+      response.status === 404 ||
+      (responseError &&
+        /the topic,\s*lesson,\s*history,\s*and\s*questions?\s+are\s+required/i.test(responseError))
     ) {
       throw new Error(
-        'The configured Topic Chat API rejected the canonical Category/Topic/Subtopic request. Its deployed request contract is likely outdated; update the API service before retrying.',
+        'The Topic Chat API endpoint or deployed request contract is outdated. Update the Render API service before retrying.',
       );
     }
     throw new Error(responseError ?? `Learning chat request failed with HTTP ${response.status}.`);

@@ -61,7 +61,8 @@ test("learning chat validates the expected request fields", async () => {
 
   assert.equal(response.status, 400);
   assert.deepEqual(await response.json(), {
-    error: "The topic, lesson, history, and question are required.",
+    code: "INVALID_CHAT_REQUEST",
+    error: "Provide valid canonical IDs, up to 20 history messages, and a question.",
   });
 });
 
@@ -70,28 +71,46 @@ test("learning chat rejects requests without authentication", async () => {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      categoryId: "sql-foundations",
-      topicId: "select-statements",
-      subtopicId: "group-by-basics",
-      category: "SQL Foundations",
-      topic: "SELECT Statements",
-      officialContent: '{"explanation":["Selecting columns."]}',
+      categoryId: "sql-database-fundamentals",
+      topicId: "what-is-sql",
+      subtopicId: "what-is-data",
       history: [],
       question: "Explain SELECT.",
     }),
   });
   assert.equal(invalidPath.status, 400);
+  assert.deepEqual(await invalidPath.json(), {
+    code: "INVALID_CURRICULUM_PATH",
+    error: "The selected categoryId, topicId, and subtopicId do not resolve to one canonical curriculum path.",
+  });
+  for (const invalidIds of [
+    {
+      categoryId: "missing-category",
+      topicId: "select-statements",
+      subtopicId: "selecting-columns",
+    },
+    {
+      categoryId: "sql-foundations",
+      topicId: "missing-topic",
+      subtopicId: "selecting-columns",
+    },
+  ]) {
+    const invalidParent = await fetch(`${baseUrl}/api/learning-chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...invalidIds, history: [], question: "Explain this." }),
+    });
+    assert.equal(invalidParent.status, 400);
+    assert.equal((await invalidParent.json() as { code: string }).code, "INVALID_CURRICULUM_PATH");
+  }
 
   const response = await fetch(`${baseUrl}/api/learning-chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      categoryId: "sql-foundations",
-      topicId: "select-statements",
-      subtopicId: "selecting-columns",
-      category: "SQL Foundations",
-      topic: "SELECT Statements",
-      officialContent: '{"explanation":["Matching keys return rows."]}',
+      categoryId: "sql-database-fundamentals",
+      topicId: "what-is-sql",
+      subtopicId: "introduction-to-sql",
       history: [],
       question: "Explain SELECT Statements.",
     }),
@@ -145,20 +164,12 @@ test("Topic Chat accepts a normal subtopic-grounded follow-up without practice q
         categoryId: "sql-foundations",
         topicId: "select-statements",
         subtopicId: "selecting-columns",
-        category: "SQL Foundations",
-        topic: "SELECT Statements",
-        officialContent: JSON.stringify({
-          canonicalPath: {
-            categoryId: "sql-foundations",
-            topicId: "select-statements",
-            subtopicId: "selecting-columns",
-          },
-          officialLesson: {
-            title: "Selecting Columns",
-            explanation: ["SELECT chooses output columns."],
-            examples: [],
-          },
-        }),
+        officialContent: "Client lesson must not become authoritative curriculum content.",
+        savedLearningNotes: [{
+          title: "My SELECT note",
+          source: "user",
+          content: "Saved note relevant to selecting columns.",
+        }],
         history: [],
         question: "hi",
       }),
@@ -172,7 +183,75 @@ test("Topic Chat accepts a normal subtopic-grounded follow-up without practice q
     assert.match(groqRequests[0].messages[0].content, /category_id=sql-foundations/);
     assert.match(groqRequests[0].messages[0].content, /topic_id=select-statements/);
     assert.match(groqRequests[0].messages[0].content, /subtopic_id=selecting-columns/);
+    assert.match(
+      groqRequests[0].messages[0].content,
+      /A SELECT statement defines which columns should appear in a SQL query result/,
+    );
+    assert.match(groqRequests[0].messages[0].content, /Saved note relevant to selecting columns/);
+    assert.equal(
+      groqRequests[0].messages[0].content.includes("Client lesson must not become authoritative"),
+      false,
+    );
     assert.equal(groqRequests[0].messages.at(-1)?.content, "hi");
+
+    const newCategoryResponse = await fetch(`${baseUrl}/api/learning-chat`, {
+      method: "POST",
+      headers: {
+        Authorization: ["Bearer", "test-token"].join(" "),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        categoryId: "sql-database-fundamentals",
+        topicId: "what-is-sql",
+        subtopicId: "introduction-to-sql",
+        moduleId: "obsolete-and-ignored",
+        history: [],
+        question: "What does SQL do?",
+      }),
+    });
+    assert.equal(
+      newCategoryResponse.status,
+      200,
+      JSON.stringify(await newCategoryResponse.json()),
+    );
+    assert.equal(groqRequests.length, 2);
+    assert.match(groqRequests[1].messages[0].content, /category_id=sql-database-fundamentals/);
+    assert.match(groqRequests[1].messages[0].content, /topic_id=what-is-sql/);
+    assert.match(groqRequests[1].messages[0].content, /subtopic_id=introduction-to-sql/);
+    assert.match(
+      groqRequests[1].messages[0].content,
+      /Structured Query Language is the standardized programming language used to manage, query, and manipulate data stored in relational databases\./,
+    );
+    assert.equal(groqRequests[1].messages.at(-1)?.content, "What does SQL do?");
+
+    const separateSubtopic = await fetch(`${baseUrl}/api/learning-chat`, {
+      method: "POST",
+      headers: {
+        Authorization: ["Bearer", "test-token"].join(" "),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        categoryId: "sql-database-fundamentals",
+        topicId: "what-is-sql",
+        subtopicId: "purpose-of-sql",
+        history: [],
+        question: "Why use SQL?",
+      }),
+    });
+    assert.equal(separateSubtopic.status, 200);
+    assert.equal(groqRequests.length, 3);
+    assert.match(groqRequests[2].messages[0].content, /subtopic_id=purpose-of-sql/);
+    assert.match(
+      groqRequests[2].messages[0].content,
+      /The main purpose of SQL is to provide a unified way to retrieve, insert, update, delete, and manage database records efficiently\./,
+    );
+    assert.equal(
+      groqRequests[2].messages[0].content.includes(
+        "Structured Query Language is the standardized programming language",
+      ),
+      false,
+    );
+    assert.equal(groqRequests[2].messages.at(-1)?.content, "Why use SQL?");
   } finally {
     globalThis.fetch = originalFetch;
     if (previousEnvironment.supabaseUrl === undefined) delete process.env.SUPABASE_URL;

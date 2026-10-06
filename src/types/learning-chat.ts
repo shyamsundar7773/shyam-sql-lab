@@ -12,7 +12,6 @@ export type TopicLesson = Pick<
   | 'commonMistakes'
   | 'practiceQuestions'
   | 'interviewQuestions'
-  | 'subtopics'
 >;
 
 export type LearningConversation = {
@@ -21,6 +20,7 @@ export type LearningConversation = {
   category_id: string;
   module_id: string | null;
   topic_id: string;
+  subtopic_id: string;
   lesson_content: TopicLesson;
   created_at: string;
   updated_at: string;

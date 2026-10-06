@@ -1,73 +1,150 @@
-import { router, useLocalSearchParams } from 'expo-router';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { SymbolView } from 'expo-symbols';
-import { useMemo, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import { useCallback, useMemo, useState } from 'react';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { PageHeader } from '@/components/PageHeader';
-import { Badge, Card } from '@/components/ui/primitives';
+import { Card } from '@/components/ui/primitives';
 import { DesignTokens } from '@/constants/theme';
+import { useAuth } from '@/contexts/auth-context';
 import { useAppTheme } from '@/contexts/theme-context';
 import { learningCategories } from '@/data/learningPath';
+import {
+  buildSubtopicProgressMap,
+  getSubtopicProgressKey,
+  getSubtopicProgressLabels,
+} from '@/lib/learning-progress';
+import {
+  getLearningPathOptions,
+  selectLearningPathCategory,
+  selectLearningPathSubtopic,
+  selectLearningPathTopic,
+} from '@/lib/learning-path-selection';
+import { supabase } from '@/lib/supabase';
 
 export default function LearningPathScreen() {
-  const { width } = useWindowDimensions();
-  const { categoryId } = useLocalSearchParams<{
+  const { categoryId, topicId, subtopicId } = useLocalSearchParams<{
     categoryId?: string;
+    topicId?: string;
+    subtopicId?: string;
   }>();
   const { colors } = useAppTheme();
-  const [selectedCategoryId, setSelectedCategoryId] = useState('');
-  const [selectedTopicId, setSelectedTopicId] = useState('');
-  const overview = learningCategories.map((item) => ({
-    category: item,
-    topicCount: item.topics.length,
-  }));
-  const category = learningCategories.find((item) => item.id === categoryId) ?? null;
-  const isCategoryView = Boolean(category);
-  const isNarrow = width < 360;
-  const pickerCategory =
-    learningCategories.find((item) => item.id === (category?.id ?? selectedCategoryId)) ?? null;
+  const { user, loading: authLoading } = useAuth();
+  const [openSelector, setOpenSelector] = useState<'Category' | 'Topic' | 'Subtopic' | null>(null);
+  const [progressCounts, setProgressCounts] = useState<Record<string, number>>({});
+  const [progressLoading, setProgressLoading] = useState(false);
+  const [progressError, setProgressError] = useState('');
+  const selection = {
+    categoryId: categoryId ?? '',
+    topicId: topicId ?? '',
+    subtopicId: subtopicId ?? '',
+  };
+  const { category, topics, topic, subtopics, choices } = getLearningPathOptions(
+    learningCategories,
+    selection,
+  );
   const categoryOptions = useMemo(
     () => learningCategories.map((item) => ({ label: item.title, value: item.id })),
     [],
   );
-  const topicOptions = (pickerCategory?.topics ?? []).map((topic) => ({
-    label: topic.title,
-    value: topic.id,
+  const topicOptions = topics.map((item) => ({
+    label: item.title,
+    value: item.id,
   }));
-  const pickerTopic =
-    pickerCategory?.topics.find((topic) => topic.id === selectedTopicId) ?? null;
-  const subtopicOptions = (pickerTopic?.subtopics ?? []).map((subtopic) => ({
-    label: subtopic.title,
-    value: subtopic.id,
+  const subtopicOptions = subtopics.map((item) => ({
+    label: item.title,
+    value: item.id,
   }));
+  const userId = user?.id;
+  useFocusEffect(useCallback(() => {
+    let active = true;
+    const loadProgress = async () => {
+      const progressCategoryId = categoryId ?? '';
+      const progressTopicId = topicId ?? '';
+      const progressContext = getLearningPathOptions(learningCategories, {
+        categoryId: progressCategoryId,
+        topicId: progressTopicId,
+        subtopicId: '',
+      });
+      if (progressContext.choices.level !== 'subtopics') {
+        return;
+      }
+      setProgressCounts({});
+      setProgressError('');
+      if (authLoading) {
+        setProgressLoading(true);
+        return;
+      }
+      if (!userId || !supabase) {
+        setProgressLoading(false);
+        setProgressError(userId
+          ? 'Progress storage is not configured.'
+          : 'Sign in to view your Subtopic learning progress.');
+        return;
+      }
+      setProgressLoading(true);
+      try {
+        const { data, error } = await supabase
+          .from('learning_subtopic_progress')
+          .select('category_id,topic_id,subtopic_id,follow_up_count')
+          .eq('user_id', userId)
+          .eq('category_id', progressCategoryId)
+          .eq('topic_id', progressTopicId)
+          .in('subtopic_id', progressContext.subtopics.map((item) => item.id));
+        if (error) {
+          throw error;
+        }
+        if (active) {
+          setProgressCounts(buildSubtopicProgressMap(userId, data ?? []));
+        }
+      } catch (error) {
+        if (active) {
+          setProgressCounts({});
+          setProgressError(
+            error instanceof Error && error.message
+              ? error.message
+              : 'Subtopic progress could not be loaded.',
+          );
+        }
+      } finally {
+        if (active) {
+          setProgressLoading(false);
+        }
+      }
+    };
+    void loadProgress();
+    return () => {
+      active = false;
+    };
+  }, [
+    authLoading,
+    categoryId,
+    topicId,
+    userId,
+  ]));
 
   const selectCategory = (nextCategoryId: string) => {
-    setSelectedCategoryId(nextCategoryId);
-    setSelectedTopicId('');
-    router.replace({ pathname: '/learning-path', params: { categoryId: nextCategoryId } });
+    const next = selectLearningPathCategory(nextCategoryId);
+    router.replace({ pathname: '/learning-path', params: { categoryId: next.categoryId } });
   };
 
   const selectTopic = (nextTopicId: string) => {
-    setSelectedTopicId(nextTopicId);
+    const next = selectLearningPathTopic(selection, nextTopicId);
+    router.replace({
+      pathname: '/learning-path',
+      params: { categoryId: next.categoryId, topicId: next.topicId },
+    });
   };
 
-  const openTopic = (topicId: string) => {
-    if (pickerCategory) {
-      router.push({
-        pathname: '/topic',
-        params: { topicId, categoryId: pickerCategory.id },
-      });
-    }
-  };
-
-  const openSubtopic = (subtopicId: string) => {
-    if (pickerCategory && pickerTopic?.subtopics.some((subtopic) => subtopic.id === subtopicId)) {
+  const openSubtopic = (nextSubtopicId: string) => {
+    if (category && topic?.subtopics.some((subtopic) => subtopic.id === nextSubtopicId)) {
+      const next = selectLearningPathSubtopic(selection, nextSubtopicId);
       router.push({
         pathname: '/topic',
         params: {
-          categoryId: pickerCategory.id,
-          topicId: pickerTopic.id,
-          subtopicId,
+          categoryId: next.categoryId,
+          topicId: next.topicId,
+          subtopicId: next.subtopicId,
         },
       });
     }
@@ -79,7 +156,7 @@ export default function LearningPathScreen() {
 
   return (
     <View style={styles.screen}>
-      {isCategoryView ? (
+      {category ? (
         <View style={styles.breadcrumbs} accessibilityLabel="Learning path breadcrumb">
           <Pressable
             accessibilityRole="button"
@@ -97,182 +174,199 @@ export default function LearningPathScreen() {
             />
           </Pressable>
           <Crumb label="Learning Path" onPress={returnToPath} colors={colors} />
-          {category ? (
-            <>
-              <SymbolView
-                name={{ ios: 'chevron.right', android: 'chevron_right', web: 'chevron_right' }}
-                size={13}
-                tintColor={colors.mutedText}
-              />
-              <Crumb
-                label={category.title}
-                onPress={() =>
-                  router.push({
-                    pathname: '/learning-path',
-                    params: { categoryId: category.id },
-                  })
-                }
-                colors={colors}
-              />
-            </>
-          ) : null}
+          <SymbolView
+            name={{ ios: 'chevron.right', android: 'chevron_right', web: 'chevron_right' }}
+            size={13}
+            tintColor={colors.mutedText}
+          />
+          <Crumb
+            label={category.title}
+            onPress={() =>
+              router.push({
+                pathname: '/learning-path',
+                params: { categoryId: category.id },
+              })
+            }
+            colors={colors}
+          />
         </View>
       ) : null}
 
       <PageHeader
         eyebrow="STRUCTURED SQL CURRICULUM"
-        title={category?.title ?? 'Learning Path'}
-        subtitle={category?.description ?? 'Choose a category, then a topic and its subtopics.'}
+        title="Learning Path"
+        subtitle="Choose a category, then a topic and subtopic to start learning with AI."
       />
 
       <Card style={styles.selectorCard}>
-        <Text style={[styles.selectorTitle, { color: colors.primaryText }]}>Choose a learning topic</Text>
+        <Text style={[styles.selectorTitle, { color: colors.primaryText }]}>
+          Choose your learning path
+        </Text>
         <LearningPathSelect
           label="Category"
-          value={pickerCategory?.title ?? ''}
-          placeholder="Select a category"
+          value={category?.title ?? ''}
+          placeholder="Select Category"
           options={categoryOptions}
-          selectedValue={pickerCategory?.id}
+          selectedValue={category?.id}
           onChange={selectCategory}
           colors={colors}
+          open={openSelector === 'Category'}
+          onToggle={() =>
+            setOpenSelector((current) => current === 'Category' ? null : 'Category')
+          }
+          onClose={() => setOpenSelector(null)}
         />
-        <LearningPathSelect
-          label="Topic"
-          value={pickerTopic?.title ?? ''}
-          placeholder={pickerCategory ? 'Select a topic' : 'Select a category first'}
-          options={topicOptions}
-          selectedValue={selectedTopicId}
-          onChange={selectTopic}
-          colors={colors}
-          disabled={!pickerCategory}
-        />
-        <LearningPathSelect
-          label="Subtopic"
-          value=""
-          placeholder={pickerTopic ? 'Select a subtopic' : 'Select a topic first'}
-          options={subtopicOptions}
-          onChange={openSubtopic}
-          colors={colors}
-          disabled={!pickerTopic}
-        />
+        {category ? (
+          <LearningPathSelect
+            label="Topic"
+            value={topic?.title ?? ''}
+            placeholder="Select Topic"
+            options={topicOptions}
+            selectedValue={topic?.id}
+            onChange={selectTopic}
+            colors={colors}
+            open={openSelector === 'Topic'}
+            onToggle={() =>
+              setOpenSelector((current) => current === 'Topic' ? null : 'Topic')
+            }
+            onClose={() => setOpenSelector(null)}
+          />
+        ) : null}
+        {topic ? (
+          <LearningPathSelect
+            label="Subtopic"
+            value={subtopics.find((item) => item.id === selection.subtopicId)?.title ?? ''}
+            placeholder="Select Subtopic"
+            options={subtopicOptions}
+            selectedValue={selection.subtopicId}
+            onChange={openSubtopic}
+            colors={colors}
+            open={openSelector === 'Subtopic'}
+            onToggle={() =>
+              setOpenSelector((current) => current === 'Subtopic' ? null : 'Subtopic')
+            }
+            onClose={() => setOpenSelector(null)}
+          />
+        ) : null}
       </Card>
 
-      {!category ? (
-        <View style={styles.content}>
-          <View style={[styles.introCard, { backgroundColor: colors.sidebarBackground }]}>
-            <View style={styles.introCopy}>
-              <Badge tone="cyan">YOUR SQL JOURNEY</Badge>
-              <Text style={[styles.introTitle, { color: colors.white }]}>
-                Learn concepts in a clear sequence.
+      {choices.items.length > 0 ? (
+        <CurriculumChoices
+          title={choices.level[0].toUpperCase() + choices.level.slice(1)}
+          items={choices.items.map((item) => ({
+            ...item,
+            ...(choices.level === 'subtopics' && user
+              ? {
+                  followUpCount: progressCounts[getSubtopicProgressKey({
+                    userId: user.id,
+                    categoryId: category?.id ?? '',
+                    topicId: topic?.id ?? '',
+                    subtopicId: item.id,
+                  })] ?? 0,
+                }
+              : {}),
+          }))}
+          colors={colors}
+          progressLoading={choices.level === 'subtopics' && (progressLoading || authLoading)}
+          progressError={choices.level === 'subtopics' ? progressError : ''}
+          onSelect={
+            choices.level === 'categories'
+              ? selectCategory
+              : choices.level === 'topics'
+                ? selectTopic
+                : openSubtopic
+          }
+        />
+      ) : null}
+    </View>
+  );
+}
+
+function CurriculumChoices({
+  title,
+  items,
+  colors,
+  progressLoading = false,
+  progressError = '',
+  onSelect,
+}: {
+  title: string;
+  items: { id: string; title: string; description: string; followUpCount?: number }[];
+  colors: ReturnType<typeof import('@/constants/theme').getThemeColors>;
+  progressLoading?: boolean;
+  progressError?: string;
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <View style={styles.choicesSection}>
+      <Text style={[styles.choicesTitle, { color: colors.primaryText }]}>{title}</Text>
+      {progressError ? (
+        <Text accessibilityRole="alert" style={[styles.progressError, { color: colors.danger }]}>
+          {progressError}
+        </Text>
+      ) : null}
+      <View style={styles.choicesList}>
+        {items.map((item) => (
+          <Pressable
+            key={item.id}
+            accessibilityRole="button"
+            accessibilityLabel={`${item.title}. ${item.description}`}
+            onPress={() => onSelect(item.id)}
+            style={({ pressed }) => [
+              styles.choiceCard,
+              { backgroundColor: colors.surface, borderColor: colors.border },
+              pressed && styles.pressed,
+            ]}>
+            <View style={styles.choiceContent}>
+              <Text style={[styles.choiceTitle, { color: colors.primaryText }]}>
+                {item.title}
               </Text>
-              <Text style={[styles.introDescription, { color: colors.sidebarText }]}>
-                Start by selecting and filtering query results, then learn to summarize data.
-              </Text>
-            </View>
-            <View style={[styles.pathIcon, { backgroundColor: colors.primarySoft }]}>
-              <SymbolView
-                name={{ ios: 'map.fill', android: 'map', web: 'map' }}
-                size={26}
-                tintColor={colors.primary}
-              />
-            </View>
-          </View>
-          <Text style={[styles.sectionTitle, { color: colors.primaryText }]}>Learning categories</Text>
-          <View style={styles.grid}>
-            {overview.map(({ category: item, topicCount }, index) => (
-              <Card
-                key={item.id}
-                style={[styles.listCard, isNarrow && styles.singleColumnCard]}>
-                <Pressable
-                  accessibilityRole="button"
-                  onPress={() => selectCategory(item.id)}
-                  style={({ pressed }) => [styles.cardPressable, pressed && styles.pressed]}>
-                  <View style={styles.cardTop}>
-                    <View
-                      style={[
-                        styles.iconBadge,
-                        { backgroundColor: item.accent === 'cyan' ? colors.accentSoft : colors.primarySoft },
-                      ]}>
-                      <SymbolView
-                        name={
-                          index === 0
-                            ? { ios: 'square.stack.3d.up.fill', android: 'layers', web: 'layers' }
-                            : { ios: 'arrow.triangle.branch', android: 'schema', web: 'schema' }
-                        }
-                        size={21}
-                        tintColor={item.accent === 'cyan' ? colors.accent : colors.primary}
-                      />
-                    </View>
-                    <SymbolView
-                      name={{ ios: 'arrow.up.right', android: 'north_east', web: 'north_east' }}
-                      size={17}
-                      tintColor={colors.mutedText}
-                    />
-                  </View>
-                  <Text style={[styles.cardTitle, { color: colors.primaryText }]}>{item.title}</Text>
-                  <Text style={[styles.cardDescription, { color: colors.secondaryText }]}>
-                    {item.description}
-                  </Text>
-                  <View style={styles.cardMeta}>
-                    <Badge tone={item.accent === 'cyan' ? 'cyan' : 'blue'}>
-                      {`${topicCount} topics`}
-                    </Badge>
-                  </View>
-                </Pressable>
-              </Card>
-            ))}
-          </View>
-          <Card style={styles.calloutCard}>
-            <Text style={[styles.cardTitle, { color: colors.primaryText }]}>
-              A steady path, one topic at a time
-            </Text>
-            <Text style={[styles.cardDescription, { color: colors.secondaryText }]}>
-              Begin with any category and read each topic at your own pace.
-            </Text>
-          </Card>
-        </View>
-      ) : isCategoryView ? (
-        <View style={styles.grid}>
-          {category.topics.map((item, index) => (
-            <Card
-              key={item.id}
-              style={[styles.listCard, isNarrow && styles.singleColumnCard]}>
-              <Pressable
-                accessibilityRole="button"
-                onPress={() => openTopic(item.id)}
-                style={({ pressed }) => [styles.cardPressable, pressed && styles.pressed]}>
-                <View style={styles.cardTop}>
-                  <View style={[styles.numberBadge, { backgroundColor: colors.primarySoft }]}>
-                    <Text style={[styles.numberText, { color: colors.primary }]}>
-                      {String(index + 1).padStart(2, '0')}
-                    </Text>
-                  </View>
-                  <Text style={[styles.metaText, { color: colors.mutedText }]}>
-                    {`${item.subtopics.length} subtopics`}
-                  </Text>
-                </View>
-                <Text style={[styles.cardTitle, { color: colors.primaryText }]}>{item.title}</Text>
-                <Text style={[styles.cardDescription, { color: colors.secondaryText }]}>
-                  {item.summary}
+              {item.description ? (
+                <Text style={[styles.choiceDescription, { color: colors.secondaryText }]}>
+                  {item.description}
                 </Text>
-                <Text style={[styles.actionText, { color: colors.primary }]}>Explore topic →</Text>
-                <View style={styles.cardMeta}>
-                  <Badge tone="blue">{`${item.subtopics.length} subtopics`}</Badge>
-                </View>
-              </Pressable>
-            </Card>
-          ))}
-        </View>
-      ) : (
-        <Card>
-          <Text style={[styles.cardTitle, { color: colors.primaryText }]}>
-            This learning section is unavailable.
-          </Text>
-          <Pressable onPress={returnToPath} accessibilityRole="button">
-            <Text style={[styles.actionText, { color: colors.primary }]}>Return to Learning Path</Text>
+              ) : null}
+            </View>
+            {title === 'Subtopics' ? (
+              <View
+                accessibilityLabel={
+                  progressError
+                    ? 'Progress unavailable'
+                    : progressLoading
+                      ? 'Loading progress'
+                      : item.followUpCount
+                        ? `Progress, ${getSubtopicProgressLabels(item.followUpCount).count}`
+                        : 'Not yet started'
+                }
+                style={[
+                  styles.progressStatus,
+                  {
+                    backgroundColor: item.followUpCount
+                      ? colors.primarySoft
+                      : colors.surfaceMuted,
+                  },
+                ]}>
+                <Text
+                  style={[
+                    styles.progressStatusTitle,
+                    { color: item.followUpCount ? colors.primary : colors.secondaryText },
+                  ]}>
+                  {progressError
+                    ? 'UNAVAILABLE'
+                    : progressLoading
+                      ? 'LOADING'
+                      : getSubtopicProgressLabels(item.followUpCount).status}
+                </Text>
+                {!progressLoading && !progressError && item.followUpCount ? (
+                  <Text style={[styles.progressCount, { color: colors.primary }]}>
+                    {getSubtopicProgressLabels(item.followUpCount).count}
+                  </Text>
+                ) : null}
+              </View>
+            ) : null}
           </Pressable>
-        </Card>
-      )}
+        ))}
+      </View>
     </View>
   );
 }
@@ -285,7 +379,9 @@ function LearningPathSelect({
   selectedValue,
   onChange,
   colors,
-  disabled = false,
+  open,
+  onToggle,
+  onClose,
 }: {
   label: string;
   value: string;
@@ -294,22 +390,21 @@ function LearningPathSelect({
   selectedValue?: string;
   onChange: (value: string) => void;
   colors: ReturnType<typeof import('@/constants/theme').getThemeColors>;
-  disabled?: boolean;
+  open: boolean;
+  onToggle: () => void;
+  onClose: () => void;
 }) {
-  const [open, setOpen] = useState(false);
   return (
     <View style={styles.selectorField}>
       <Text style={[styles.selectorLabel, { color: colors.primaryText }]}>{label}</Text>
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={`${label}: ${value || placeholder}. Choose ${label}`}
-        accessibilityState={{ disabled }}
-        disabled={disabled}
-        onPress={() => setOpen((current) => !current)}
+        accessibilityState={{ expanded: open }}
+        onPress={onToggle}
         style={({ pressed }) => [
           styles.selectorButton,
           { backgroundColor: colors.surfaceMuted, borderColor: colors.border },
-          disabled && styles.selectorDisabled,
           pressed && styles.pressed,
         ]}>
         <Text style={[styles.selectorValue, { color: value ? colors.primaryText : colors.secondaryText }]} numberOfLines={1}>
@@ -327,7 +422,7 @@ function LearningPathSelect({
                 accessibilityState={{ selected: option.value === selectedValue }}
                 onPress={() => {
                   onChange(option.value);
-                  setOpen(false);
+                  onClose();
                 }}
                 style={({ pressed }) => [
                   styles.selectorOption,
@@ -392,16 +487,70 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
   },
-  currentCrumb: {
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  content: {
-    gap: 24,
-  },
   selectorCard: {
     gap: 12,
     marginBottom: 20,
+  },
+  choicesSection: {
+    gap: 10,
+    marginBottom: 24,
+  },
+  choicesTitle: {
+    fontSize: 17,
+    fontWeight: '800',
+  },
+  choicesList: {
+    gap: 10,
+  },
+  choiceCard: {
+    width: '100%',
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    columnGap: 12,
+    rowGap: 10,
+    gap: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderWidth: 1,
+    borderRadius: DesignTokens.radius.medium,
+    ...DesignTokens.elevation.card,
+  },
+  choiceContent: {
+    flexGrow: 1,
+    flexBasis: 220,
+    gap: 6,
+  },
+  choiceTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  choiceDescription: {
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  progressStatus: {
+    minWidth: 132,
+    maxWidth: '100%',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: DesignTokens.radius.small,
+    alignItems: 'flex-start',
+  },
+  progressStatusTitle: {
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.25,
+  },
+  progressCount: {
+    marginTop: 3,
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  progressError: {
+    fontSize: 12,
+    lineHeight: 18,
   },
   selectorTitle: {
     fontSize: 15,
@@ -423,9 +572,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 10,
-  },
-  selectorDisabled: {
-    opacity: 0.6,
   },
   selectorValue: {
     flex: 1,
@@ -459,174 +605,6 @@ const styles = StyleSheet.create({
   },
   selectorOptionText: {
     fontSize: 14,
-  },
-  introCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 18,
-    padding: 24,
-    borderRadius: DesignTokens.radius.large,
-  },
-  introCopy: {
-    flex: 1,
-    gap: 10,
-  },
-  introTitle: {
-    maxWidth: 560,
-    fontSize: 22,
-    lineHeight: 29,
-    fontWeight: '800',
-  },
-  introDescription: {
-    maxWidth: 620,
-    fontSize: 13,
-    lineHeight: 20,
-  },
-  pathIcon: {
-    width: 58,
-    height: 58,
-    borderRadius: 18,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  sectionTitle: {
-    fontSize: 17,
-    fontWeight: '800',
-    marginBottom: -10,
-  },
-  grid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 16,
-  },
-  listCard: {
-    flexGrow: 1,
-    flexBasis: 300,
-    maxWidth: 620,
-    padding: 0,
-    overflow: 'hidden',
-  },
-  singleColumnCard: {
-    flexBasis: '100%',
-    maxWidth: '100%',
-  },
-  cardPressable: {
-    minHeight: 190,
-    padding: 22,
-  },
-  cardTop: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 16,
-  },
-  iconBadge: {
-    width: 42,
-    height: 42,
-    borderRadius: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  numberBadge: {
-    width: 40,
-    height: 40,
-    borderRadius: 13,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  numberText: {
-    fontSize: 13,
-    fontWeight: '800',
-  },
-  cardTitle: {
-    fontSize: 15,
-    lineHeight: 21,
-    fontWeight: '800',
-  },
-  cardDescription: {
-    fontSize: 12,
-    lineHeight: 19,
-    marginTop: 7,
-  },
-  cardMeta: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    marginTop: 17,
-  },
-  metaText: {
-    fontSize: 11,
-    fontWeight: '600',
-  },
-  calloutCard: {
-    gap: 8,
-  },
-  actionText: {
-    fontSize: 12,
-    fontWeight: '800',
-    marginTop: 16,
-  },
-  topicList: {
-    gap: 12,
-  },
-  topicCard: {
-    padding: 0,
-    overflow: 'hidden',
-  },
-  topicPressable: {
-    minHeight: 112,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 16,
-    padding: 20,
-  },
-  topicCopy: {
-    flex: 1,
-    minWidth: 0,
-  },
-  topicMeta: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 14,
-    marginTop: 12,
-  },
-  deleteAction: {
-    alignSelf: 'flex-start',
-    paddingHorizontal: 22,
-    paddingBottom: 16,
-  },
-  deleteText: {
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  deleteConfirmation: {
-    gap: 10,
-    marginTop: 12,
-  },
-  deleteButtons: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    alignItems: 'center',
-    gap: 12,
-    marginTop: 8,
-  },
-  deleteCancel: {
-    minHeight: 42,
-    justifyContent: 'center',
-    paddingHorizontal: 14,
-  },
-  deleteConfirm: {
-    minWidth: 88,
-    minHeight: 42,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: DesignTokens.radius.small,
-    paddingHorizontal: 14,
-  },
-  deleteConfirmText: {
-    fontSize: 13,
-    fontWeight: '800',
   },
   pressed: {
     opacity: 0.76,

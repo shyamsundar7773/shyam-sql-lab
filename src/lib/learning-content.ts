@@ -14,6 +14,12 @@ export type SubtopicContext = {
   subtopic: Subtopic;
 };
 
+export type SubtopicConversationIdentity = {
+  categoryId: string;
+  topicId: string;
+  subtopicId: string;
+};
+
 export function canSendTopicMessage(input: {
   categoryId: string | undefined;
   topicId: string | undefined;
@@ -79,4 +85,30 @@ export function getSubtopicContext(
   const topic = category?.topics.find((item) => item.id === topicId);
   const subtopic = topic?.subtopics.find((item) => item.id === subtopicId);
   return category && topic && subtopic ? { category, topic, subtopic } : null;
+}
+
+export function getSelectedSubtopicContext(
+  categoryId: string | undefined,
+  topicId: string | undefined,
+  subtopicId: string | undefined,
+): SubtopicContext | null {
+  if (!categoryId || !topicId || !subtopicId) {
+    return null;
+  }
+  return getSubtopicContext(categoryId, topicId, subtopicId);
+}
+
+export function getSubtopicConversationIdentity(
+  categoryId: string,
+  topicId: string,
+  subtopicId: string,
+): SubtopicConversationIdentity | null {
+  const context = getSubtopicContext(categoryId, topicId, subtopicId);
+  return context
+    ? {
+        categoryId: context.category.id,
+        topicId: context.topic.id,
+        subtopicId: context.subtopic.id,
+      }
+    : null;
 }

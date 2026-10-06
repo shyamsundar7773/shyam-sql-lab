@@ -97,16 +97,35 @@ test('Topic Chat request preserves its selected canonical subtopic ID', async ()
       categoryId: 'data-querying',
       topicId: 'aggregations',
       subtopicId: 'group-by-basics',
-      category: 'Data Querying',
-      topic: 'Aggregations',
-      officialContent: '{"canonicalPath":{"subtopicId":"group-by-basics"}}',
+      savedLearningNotes: [],
       history: [],
       question: 'How does GROUP BY work?',
+    });
+    await askTopicQuestion({
+      accessToken: 'test-token',
+      categoryId: 'sql-database-fundamentals',
+      topicId: 'what-is-sql',
+      subtopicId: 'introduction-to-sql',
+      savedLearningNotes: [],
+      history: [],
+      question: 'What does SQL do?',
     });
     assert.equal(requestBodies[0]?.categoryId, 'data-querying');
     assert.equal(requestBodies[0]?.topicId, 'aggregations');
     assert.equal(requestBodies[0]?.subtopicId, 'group-by-basics');
     assert.equal(requestBodies[0]?.question, 'How does GROUP BY work?');
+    assert.equal('moduleId' in requestBodies[0], false);
+    assert.equal('officialContent' in requestBodies[0], false);
+    assert.equal('category' in requestBodies[0], false);
+    assert.deepEqual(
+      [
+        requestBodies[1]?.categoryId,
+        requestBodies[1]?.topicId,
+        requestBodies[1]?.subtopicId,
+      ],
+      ['sql-database-fundamentals', 'what-is-sql', 'introduction-to-sql'],
+    );
+    assert.equal(requestBodies[1]?.question, 'What does SQL do?');
 
     await assert.rejects(
       () => askTopicQuestion({
@@ -114,21 +133,20 @@ test('Topic Chat request preserves its selected canonical subtopic ID', async ()
         categoryId: 'sql-foundations',
         topicId: 'aggregations',
         subtopicId: 'group-by-basics',
-        category: 'SQL Foundations',
-        topic: 'Aggregations',
-        officialContent: '{}',
+        savedLearningNotes: [],
         history: [],
         question: 'Invalid path',
       }),
       /valid canonical Category, Topic, and Subtopic/,
     );
+    assert.equal(requestBodies.length, 2);
   } finally {
     globalThis.fetch = previousFetch;
     clientEnv.apiUrl = previousApiUrl;
   }
 });
 
-test('legacy Module-based server validation is reported as a deployment contract mismatch', async () => {
+test('outdated Topic Chat contract is distinct from canonical curriculum validation errors', async () => {
   const previousApiUrl = clientEnv.apiUrl;
   const previousFetch = globalThis.fetch;
   clientEnv.apiUrl = 'https://legacy-api.test';
@@ -161,16 +179,31 @@ test('legacy Module-based server validation is reported as a deployment contract
     await assert.rejects(
       () => askTopicQuestion({
         accessToken: 'test-token',
-        categoryId: 'sql-foundations',
-        topicId: 'select-statements',
-        subtopicId: 'selecting-columns',
-        category: 'SQL Foundations',
-        topic: 'SELECT Statements',
-        officialContent: '{"title":"Selecting Columns"}',
+        categoryId: 'sql-database-fundamentals',
+        topicId: 'what-is-sql',
+        subtopicId: 'introduction-to-sql',
+        savedLearningNotes: [],
         history: [],
         question: 'hi',
       }),
-      /deployed request contract is likely outdated/,
+      /endpoint or deployed request contract is outdated/,
+    );
+
+    globalThis.fetch = async () => new Response(JSON.stringify({
+      code: 'INVALID_CURRICULUM_PATH',
+      error: 'The selected categoryId, topicId, and subtopicId do not resolve to one canonical curriculum path.',
+    }), { status: 400 });
+    await assert.rejects(
+      () => askTopicQuestion({
+        accessToken: 'test-token',
+        categoryId: 'sql-database-fundamentals',
+        topicId: 'what-is-sql',
+        subtopicId: 'introduction-to-sql',
+        savedLearningNotes: [],
+        history: [],
+        question: 'Explain this topic.',
+      }),
+      /do not resolve to one canonical curriculum path/,
     );
   } finally {
     globalThis.fetch = previousFetch;

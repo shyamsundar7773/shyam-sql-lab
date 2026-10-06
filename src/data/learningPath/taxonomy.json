@@ -46,5 +46,679 @@
         ]
       }
     ]
+  },
+  {
+    "id": "sql-database-fundamentals",
+    "title": "SQL & Database Fundamentals",
+    "description": "",
+    "accent": "blue",
+    "topics": [
+      {
+        "id": "what-is-sql",
+        "title": "What is SQL?",
+        "subtopics": [
+          {
+            "id": "introduction-to-sql",
+            "title": "Introduction to SQL",
+            "definition": "Structured Query Language is the standardized programming language used to manage, query, and manipulate data stored in relational databases."
+          },
+          {
+            "id": "purpose-of-sql",
+            "title": "Purpose of SQL",
+            "definition": "The main purpose of SQL is to provide a unified way to retrieve, insert, update, delete, and manage database records efficiently."
+          },
+          {
+            "id": "sql-as-a-database-language",
+            "title": "SQL as a Database Language",
+            "definition": "SQL acts as a specialized database language that allows users and applications to communicate directly with database systems."
+          },
+          {
+            "id": "sql-and-relational-databases",
+            "title": "SQL and Relational Databases",
+            "definition": "SQL serves as the standard interface for interacting with relational databases, which organize data into structured tables connected by relationships."
+          },
+          {
+            "id": "sql-statements-and-queries",
+            "title": "SQL Statements and Queries",
+            "definition": "SQL statements are instructions issued to a database system to perform operations like fetching data or modifying structure."
+          },
+          {
+            "id": "sql-syntax-basics",
+            "title": "SQL Syntax Basics",
+            "definition": "SQL syntax comprises the rules and structural conventions used to write correct and executable database commands."
+          },
+          {
+            "id": "sql-keywords-and-clauses",
+            "title": "SQL Keywords and Clauses",
+            "definition": "Keywords are reserved words in SQL that perform specific actions, while clauses combine them with expressions to filter or group data."
+          },
+          {
+            "id": "sql-comments",
+            "title": "SQL Comments",
+            "definition": "SQL comments are non-executable text notes placed in scripts to document code logic for developers and maintainers."
+          },
+          {
+            "id": "sql-standards-and-dialects",
+            "title": "SQL Standards and Dialects",
+            "definition": "ANSI and ISO establish official SQL standards, though individual database systems often add custom features called dialects."
+          },
+          {
+            "id": "sql-use-cases",
+            "title": "SQL Use Cases",
+            "definition": "Common SQL use cases include performing business analytics, generating reports, processing user transactions, and managing application data."
+          },
+          {
+            "id": "sql-in-real-world-applications",
+            "title": "SQL in Real-World Applications",
+            "definition": "Real-world applications rely on SQL behind the scenes to authenticate users, store user activity, process orders, and generate operational metrics."
+          }
+        ]
+      },
+      {
+        "id": "what-is-a-database",
+        "title": "What is a Database?",
+        "subtopics": [
+          {
+            "id": "what-is-data",
+            "title": "What is Data?",
+            "definition": "Data consists of raw facts, figures, observations, or measurements collected and stored for reference, processing, or analysis."
+          },
+          {
+            "id": "what-is-a-database-subtopic",
+            "title": "What is a Database?",
+            "definition": "A database is an organized, electronically stored collection of structured information designed for fast search, retrieval, and management."
+          },
+          {
+            "id": "purpose-of-a-database",
+            "title": "Purpose of a Database",
+            "definition": "A database provides a secure, central repository that allows multi-user access while maintaining data accuracy and persistence over time."
+          },
+          {
+            "id": "database-components",
+            "title": "Database Components",
+            "definition": "Key database components include storage hardware, management software, operational data, access schemas, and the query language interface."
+          },
+          {
+            "id": "structured-vs-unstructured-data",
+            "title": "Structured vs Unstructured Data",
+            "definition": "Structured data follows a strict tabular format with fixed fields, whereas unstructured data includes flexible formats like videos, audio, or freeform text."
+          },
+          {
+            "id": "relational-databases",
+            "title": "Relational Databases",
+            "definition": "Relational databases organize information into interconnected tables made of rows and columns linked through unique key identifiers."
+          },
+          {
+            "id": "non-relational-databases",
+            "title": "Non-Relational Databases",
+            "definition": "Non-relational databases store unstructured or semi-structured information using document, key-value, graph, or wide-column data models."
+          },
+          {
+            "id": "database-examples",
+            "title": "Database Examples",
+            "definition": "Popular relational database systems include PostgreSQL, MySQL, Oracle Database, Microsoft SQL Server, and SQLite."
+          },
+          {
+            "id": "database-use-cases",
+            "title": "Database Use Cases",
+            "definition": "Databases power essential backend functionality across banking systems, healthcare records, online marketplaces, and mobile application platforms."
+          },
+          {
+            "id": "how-applications-use-databases",
+            "title": "How Applications Use Databases",
+            "definition": "Applications connect to databases to read user inputs, write state changes, update records, and retrieve persistent data for user interfaces."
+          }
+        ]
+      },
+      {
+        "id": "dbms-vs-rdbms",
+        "title": "DBMS vs RDBMS",
+        "subtopics": [
+          {
+            "id": "what-is-a-dbms",
+            "title": "What is a DBMS?",
+            "definition": "A Database Management System is software that controls the creation, maintenance, security, and administrative access of a database."
+          },
+          {
+            "id": "what-is-an-rdbms",
+            "title": "What is an RDBMS?",
+            "definition": "An RDBMS is an advanced database management system specifically designed to maintain data organized into relational tables."
+          },
+          {
+            "id": "dbms-characteristics",
+            "title": "DBMS Characteristics",
+            "definition": "Traditional DBMS software stores data primarily as flat files or hierarchies without enforcing strict structural relationships between datasets."
+          },
+          {
+            "id": "rdbms-characteristics",
+            "title": "RDBMS Characteristics",
+            "definition": "An RDBMS guarantees data integrity, enforces ACID properties, supports tabular storage, and utilizes foreign key constraints between entities."
+          },
+          {
+            "id": "tables-in-rdbms",
+            "title": "Tables in RDBMS",
+            "definition": "Tables are the primary storage building blocks in an RDBMS, arranging related attributes into distinct columns and records into rows."
+          },
+          {
+            "id": "relationships-in-rdbms",
+            "title": "Relationships in RDBMS",
+            "definition": "Relationships in an RDBMS connect logical records across tables using matching key values to prevent data duplication."
+          },
+          {
+            "id": "keys-in-rdbms",
+            "title": "Keys in RDBMS",
+            "definition": "Keys are specialized column fields used to identify unique records or establish links between separate tables in a database."
+          },
+          {
+            "id": "data-integrity-in-rdbms",
+            "title": "Data Integrity in RDBMS",
+            "definition": "Data integrity refers to system-enforced rules that ensure data remains accurate, complete, and consistent across all database operations."
+          },
+          {
+            "id": "dbms-vs-rdbms",
+            "title": "DBMS vs RDBMS",
+            "definition": "While a basic DBMS handles single-file data storage without relational links, an RDBMS enforces foreign key integrity across multiple tables."
+          },
+          {
+            "id": "real-world-dbms-rdbms-examples",
+            "title": "Real-World DBMS/RDBMS Examples",
+            "definition": "Legacy file systems serve as basic DBMS examples, while enterprise solutions like PostgreSQL and MySQL represent modern RDBMS implementations."
+          }
+        ]
+      },
+      {
+        "id": "sql-vs-mysql",
+        "title": "SQL vs MySQL",
+        "subtopics": [
+          {
+            "id": "what-is-sql-subtopic",
+            "title": "What is SQL?",
+            "definition": "SQL is a standard query language designed to specify database operations rather than a standalone software product."
+          },
+          {
+            "id": "what-is-mysql",
+            "title": "What is MySQL?",
+            "definition": "MySQL is a popular open-source relational database management system that uses SQL to execute query commands."
+          },
+          {
+            "id": "sql-as-a-language",
+            "title": "SQL as a Language",
+            "definition": "As a computer language, SQL defines the exact syntax, keywords, and semantic rules for writing database queries."
+          },
+          {
+            "id": "mysql-as-a-database-management-system",
+            "title": "MySQL as a Database Management System",
+            "definition": "MySQL provides the underlying software engine, storage mechanisms, memory buffers, and network interfaces that execute incoming SQL requests."
+          },
+          {
+            "id": "sql-vs-mysql",
+            "title": "SQL vs MySQL",
+            "definition": "The primary distinction is that SQL is the language used to request data, whereas MySQL is the database application that fulfills those requests."
+          },
+          {
+            "id": "mysql-and-sql-compatibility",
+            "title": "MySQL and SQL Compatibility",
+            "definition": "MySQL complies with core ANSI SQL standards while implementing distinct vendor-specific features and functions."
+          },
+          {
+            "id": "mysql-sql-dialect",
+            "title": "MySQL SQL Dialect",
+            "definition": "The MySQL dialect includes custom extensions such as backtick identifier quoting, specific date formatting methods, and unique string functions."
+          },
+          {
+            "id": "mysql-server-and-client",
+            "title": "MySQL Server and Client",
+            "definition": "The MySQL Server stores data and processes requests, while MySQL Client tools allow developers to issue SQL statements to the server."
+          },
+          {
+            "id": "other-sql-database-systems",
+            "title": "Other SQL Database Systems",
+            "definition": "Notable SQL database systems alternative to MySQL include PostgreSQL, Microsoft SQL Server, Oracle, and SQLite."
+          },
+          {
+            "id": "choosing-a-database-system",
+            "title": "Choosing a Database System",
+            "definition": "Selecting a database system depends on factors such as scalability requirements, licensing costs, performance capabilities, and ecosystem support."
+          }
+        ]
+      },
+      {
+        "id": "database-schema-table",
+        "title": "Database, Schema, Table",
+        "subtopics": [
+          {
+            "id": "what-is-a-database-object",
+            "title": "What is a Database?",
+            "definition": "A database is the overarching storage container that houses schemas, configuration files, user privileges, and system catalogs."
+          },
+          {
+            "id": "what-is-a-schema",
+            "title": "What is a Schema?",
+            "definition": "A schema is a logical namespace within a database that groups related structural objects like tables, views, and indexes."
+          },
+          {
+            "id": "what-is-a-table",
+            "title": "What is a Table?",
+            "definition": "A table is a fundamental database object composed of named columns and individual record rows that store structured domain data."
+          },
+          {
+            "id": "database-vs-schema",
+            "title": "Database vs Schema",
+            "definition": "A database acts as the top-level system container, whereas a schema provides internal logical organization inside that database."
+          },
+          {
+            "id": "schema-vs-table",
+            "title": "Schema vs Table",
+            "definition": "A schema functions as a organizational folder, while a table is the actual structure inside that folder holding structured dataset records."
+          },
+          {
+            "id": "tables-and-data-storage",
+            "title": "Tables and Data Storage",
+            "definition": "Tables map abstract physical data blocks into readable tabular structures, enabling precise record insertion, retrieval, and updating."
+          },
+          {
+            "id": "table-structure",
+            "title": "Table Structure",
+            "definition": "Table structure defines the blueprint of a dataset by establishing fixed column names, specific data types, and integrity constraints."
+          },
+          {
+            "id": "columns-and-data-types",
+            "title": "Columns and Data Types",
+            "definition": "Columns define explicit data attributes, while data types restrict what kind of values, such as integers or strings, can be stored in them."
+          },
+          {
+            "id": "rows-and-records",
+            "title": "Rows and Records",
+            "definition": "Rows, also referred to as records, represent single, complete instances of data containing specific attribute values across all table columns."
+          },
+          {
+            "id": "database-object-hierarchy",
+            "title": "Database Object Hierarchy",
+            "definition": "The standard object hierarchy ascends from individual column data cells, up through rows and tables, into schemas, and finally to the database."
+          }
+        ]
+      },
+      {
+        "id": "rows-and-columns",
+        "title": "Rows & Columns",
+        "subtopics": [
+          {
+            "id": "what-is-a-row",
+            "title": "What is a Row?",
+            "definition": "A row is a single horizontal entry in a table that represents one distinct record or item in a dataset."
+          },
+          {
+            "id": "what-is-a-column",
+            "title": "What is a Column?",
+            "definition": "A column is a named vertical component in a table that holds a specific type of attribute value across all rows."
+          },
+          {
+            "id": "row-vs-column",
+            "title": "Row vs Column",
+            "definition": "Rows represent individual data entities, whereas columns define the shared properties and data types that describe those entities."
+          },
+          {
+            "id": "records-and-fields",
+            "title": "Records and Fields",
+            "definition": "A record corresponds to a complete row of data, while a field refers to a single column value within that record."
+          },
+          {
+            "id": "column-data-types",
+            "title": "Column Data Types",
+            "definition": "Column data types ensure data quality by enforcing whether an attribute accepts numbers, text strings, dates, or boolean flags."
+          },
+          {
+            "id": "column-values",
+            "title": "Column Values",
+            "definition": "Column values represent the specific data points stored at the intersection of a single row and a targeted column."
+          },
+          {
+            "id": "null-values",
+            "title": "NULL Values",
+            "definition": "A NULL value in a column indicates missing, unknown, or non-applicable data, distinctly different from zero or an empty string."
+          },
+          {
+            "id": "row-uniqueness",
+            "title": "Row Uniqueness",
+            "definition": "Row uniqueness ensures that every record in a table can be uniquely identified and distinguished from all other records."
+          },
+          {
+            "id": "reading-table-data",
+            "title": "Reading Table Data",
+            "definition": "Reading table data involves querying the database engine to extract matching rows and columns without modifying persistent storage."
+          },
+          {
+            "id": "rows-and-columns-in-queries",
+            "title": "Rows and Columns in Queries",
+            "definition": "In SQL queries, SELECT clauses specify target columns to display, while WHERE clauses filter which rows are retrieved."
+          }
+        ]
+      },
+      {
+        "id": "primary-key-concept",
+        "title": "Primary Key Concept",
+        "subtopics": [
+          {
+            "id": "what-is-a-primary-key",
+            "title": "What is a Primary Key?",
+            "definition": "A primary key is a column or set of columns that uniquely identifies each individual row within a database table."
+          },
+          {
+            "id": "purpose-of-a-primary-key",
+            "title": "Purpose of a Primary Key",
+            "definition": "The purpose of a primary key is to prevent duplicate records and provide a reliable identity for referencing specific rows."
+          },
+          {
+            "id": "primary-key-rules",
+            "title": "Primary Key Rules",
+            "definition": "Primary key rules dictate that every table value in the key column must be strictly unique and non-null."
+          },
+          {
+            "id": "primary-key-and-uniqueness",
+            "title": "Primary Key and Uniqueness",
+            "definition": "Uniqueness guarantees that no two rows in the same table share the exact same primary key value."
+          },
+          {
+            "id": "primary-key-and-null",
+            "title": "Primary Key and NULL",
+            "definition": "Primary key columns strictly forbid NULL values because unknown identifiers defeat the goal of guaranteed row identification."
+          },
+          {
+            "id": "single-column-primary-key",
+            "title": "Single-Column Primary Key",
+            "definition": "A single-column primary key relies on one distinct attribute, such as an auto-incrementing ID integer, to identify each row."
+          },
+          {
+            "id": "composite-primary-key",
+            "title": "Composite Primary Key",
+            "definition": "A composite primary key uses a combination of two or more columns together to create a unique identifier for every record."
+          },
+          {
+            "id": "choosing-a-primary-key",
+            "title": "Choosing a Primary Key",
+            "definition": "Choosing a primary key involves selecting stable, concise, and unique attributes that will not change over the record's lifetime."
+          },
+          {
+            "id": "primary-key-in-relationships",
+            "title": "Primary Key in Relationships",
+            "definition": "Primary keys act as foreign key targets in other tables to form parent-child linkages across a database."
+          },
+          {
+            "id": "primary-key-best-practices",
+            "title": "Primary Key Best Practices",
+            "definition": "Primary key best practices recommend using simple surrogate numeric keys, avoiding business logic attributes, and ensuring values are immutable."
+          }
+        ]
+      },
+      {
+        "id": "foreign-key-concept",
+        "title": "Foreign Key Concept",
+        "subtopics": [
+          {
+            "id": "what-is-a-foreign-key",
+            "title": "What is a Foreign Key?",
+            "definition": "A foreign key is a column in one table that references the primary key of another table to link related data."
+          },
+          {
+            "id": "purpose-of-a-foreign-key",
+            "title": "Purpose of a Foreign Key",
+            "definition": "A foreign key establishes and enforces relational links between tables to ensure referenced data exists and remains valid."
+          },
+          {
+            "id": "foreign-key-and-primary-key",
+            "title": "Foreign Key and Primary Key",
+            "definition": "A foreign key in a child table points directly to a matching primary key value stored in a parent table."
+          },
+          {
+            "id": "foreign-key-relationships",
+            "title": "Foreign Key Relationships",
+            "definition": "Foreign key relationships connect business entities together, enabling database queries to combine related information across separate tables seamlessly."
+          },
+          {
+            "id": "parent-and-child-tables",
+            "title": "Parent and Child Tables",
+            "definition": "The parent table holds the primary key reference, while the child table contains the foreign key referencing that parent record."
+          },
+          {
+            "id": "referential-integrity",
+            "title": "Referential Integrity",
+            "definition": "Referential integrity is a database state where all foreign key values correctly match existing primary key records in referenced tables."
+          },
+          {
+            "id": "foreign-key-constraints",
+            "title": "Foreign Key Constraints",
+            "definition": "Foreign key constraints are database rules that block invalid insertions, updates, or deletions that would break parent-child references."
+          },
+          {
+            "id": "multiple-foreign-keys",
+            "title": "Multiple Foreign Keys",
+            "definition": "A single table can contain multiple foreign key columns to establish references to several distinct parent tables simultaneously."
+          },
+          {
+            "id": "self-referencing-foreign-key",
+            "title": "Self-Referencing Foreign Key",
+            "definition": "A self-referencing foreign key points to another row's primary key within the very same table to represent hierarchical relationships."
+          },
+          {
+            "id": "foreign-key-best-practices",
+            "title": "Foreign Key Best Practices",
+            "definition": "Best practices include indexing foreign key columns for fast join performance and explicitly setting deletion behavior rules."
+          }
+        ]
+      },
+      {
+        "id": "relationships",
+        "title": "Relationships",
+        "subtopics": [
+          {
+            "id": "what-is-a-database-relationship",
+            "title": "What is a Database Relationship?",
+            "definition": "A database relationship is an established logical association between entities stored across two or more database tables."
+          },
+          {
+            "id": "one-to-one-relationship",
+            "title": "One-to-One Relationship",
+            "definition": "A one-to-one relationship exists when a single record in one table is associated with at most one record in another table."
+          },
+          {
+            "id": "one-to-many-relationship",
+            "title": "One-to-Many Relationship",
+            "definition": "A one-to-many relationship occurs when a single row in a parent table links to multiple rows in a child table."
+          },
+          {
+            "id": "many-to-many-relationship",
+            "title": "Many-to-Many Relationship",
+            "definition": "A many-to-many relationship exists when multiple rows in one table relate to multiple rows in another table."
+          },
+          {
+            "id": "primary-key-and-foreign-key-relationships",
+            "title": "Primary Key and Foreign Key Relationships",
+            "definition": "Primary key and foreign key combinations provide the fundamental mechanism used to build and enforce database relationships."
+          },
+          {
+            "id": "parent-child-relationships",
+            "title": "Parent-Child Relationships",
+            "definition": "Parent-child relationships describe structural dependencies where child records rely on the existence of a corresponding primary parent record."
+          },
+          {
+            "id": "junction-tables",
+            "title": "Junction Tables",
+            "definition": "A junction table resolves many-to-many relationships by converting them into two separate one-to-many relationships using combined foreign keys."
+          },
+          {
+            "id": "relationship-examples",
+            "title": "Relationship Examples",
+            "definition": "Common relationship examples include customers to orders for one-to-many links, and students to courses using a enrollment junction table."
+          },
+          {
+            "id": "identifying-relationships",
+            "title": "Identifying Relationships",
+            "definition": "Identifying relationships occur when a child table requires a parent table's primary key as part of its own composite primary key."
+          },
+          {
+            "id": "relationships-in-sql-queries",
+            "title": "Relationships in SQL Queries",
+            "definition": "Relationships allow SQL queries to combine data across multiple tables efficiently using explicit JOIN operational clauses."
+          }
+        ]
+      },
+      {
+        "id": "sql-commands-overview",
+        "title": "SQL Commands Overview",
+        "subtopics": [
+          {
+            "id": "sql-command-categories",
+            "title": "SQL Command Categories",
+            "definition": "SQL commands are grouped into distinct functional categories based on whether they define, manipulate, query, or secure data."
+          },
+          {
+            "id": "ddl-commands",
+            "title": "DDL Commands",
+            "definition": "Data Definition Language commands, such as CREATE and DROP, define and alter structural database objects and schemas."
+          },
+          {
+            "id": "dml-commands",
+            "title": "DML Commands",
+            "definition": "Data Manipulation Language commands modify stored database records through actions like inserting, updating, and deleting rows."
+          },
+          {
+            "id": "dql-commands",
+            "title": "DQL Commands",
+            "definition": "Data Query Language consists primarily of SELECT statements used to query, filter, and extract stored information from database tables."
+          },
+          {
+            "id": "dcl-commands",
+            "title": "DCL Commands",
+            "definition": "Data Control Language commands manage user permissions, access rights, and security parameters for database objects."
+          },
+          {
+            "id": "tcl-commands",
+            "title": "TCL Commands",
+            "definition": "Transaction Control Language commands manage database transaction boundaries to maintain data integrity across complex batch operational statements."
+          },
+          {
+            "id": "create",
+            "title": "CREATE",
+            "definition": "The CREATE command builds new database objects such as databases, tables, schemas, indexes, or views."
+          },
+          {
+            "id": "alter",
+            "title": "ALTER",
+            "definition": "The ALTER command modifies the structure of existing database objects, such as adding or dropping table columns."
+          },
+          {
+            "id": "drop",
+            "title": "DROP",
+            "definition": "The DROP command permanently removes database objects, including their underlying structures and stored data, from the system."
+          },
+          {
+            "id": "insert",
+            "title": "INSERT",
+            "definition": "The INSERT command adds new rows of data records into a specified database table."
+          },
+          {
+            "id": "update",
+            "title": "UPDATE",
+            "definition": "The UPDATE command modifies existing attribute values within target rows of a database table."
+          },
+          {
+            "id": "delete",
+            "title": "DELETE",
+            "definition": "The DELETE command removes specified rows from a database table based on provided conditional filter rules."
+          },
+          {
+            "id": "select",
+            "title": "SELECT",
+            "definition": "The SELECT command retrieves specified data attributes and rows from one or more database tables."
+          },
+          {
+            "id": "grant-and-revoke",
+            "title": "GRANT and REVOKE",
+            "definition": "GRANT assigns administrative permissions to database users, while REVOKE cancels previously issued user database privileges."
+          },
+          {
+            "id": "commit-and-rollback",
+            "title": "COMMIT and ROLLBACK",
+            "definition": "COMMIT permanently saves transaction changes to the database, while ROLLBACK undoes uncommitted modifications back to a safe state."
+          },
+          {
+            "id": "sql-command-category-differences",
+            "title": "SQL Command Category Differences",
+            "definition": "SQL command categories differ by function, distinguishing structural setup commands from transactional, operational, and data retrieval statements."
+          }
+        ]
+      },
+      {
+        "id": "sql-developer-workflow",
+        "title": "SQL Developer Workflow",
+        "subtopics": [
+          {
+            "id": "understanding-requirements",
+            "title": "Understanding Requirements",
+            "definition": "Understanding requirements involves analyzing business goals to identify the necessary data points, rules, and system outputs needed."
+          },
+          {
+            "id": "understanding-database-structure",
+            "title": "Understanding Database Structure",
+            "definition": "Understanding database structure means reviewing schema diagrams to learn table schemas, key configurations, and available data attributes."
+          },
+          {
+            "id": "identifying-tables",
+            "title": "Identifying Tables",
+            "definition": "Identifying tables requires pinpointing which specific database entities contain the data fields necessary to fulfill a query requirement."
+          },
+          {
+            "id": "understanding-relationships-workflow",
+            "title": "Understanding Relationships",
+            "definition": "Understanding relationships requires analyzing foreign key connections between tables to ensure correct data joining and retrieval."
+          },
+          {
+            "id": "writing-sql-queries",
+            "title": "Writing SQL Queries",
+            "definition": "Writing SQL queries involves translating business rules into syntactically correct SQL statements to perform desired database operations."
+          },
+          {
+            "id": "testing-queries",
+            "title": "Testing Queries",
+            "definition": "Testing queries involves running SQL statements against development datasets to verify correctness, execution safety, and system performance."
+          },
+          {
+            "id": "validating-query-results",
+            "title": "Validating Query Results",
+            "definition": "Validating query results ensures returned data rows match expected business logic, handling edge cases and null values properly."
+          },
+          {
+            "id": "debugging-sql-queries",
+            "title": "Debugging SQL Queries",
+            "definition": "Debugging SQL queries isolates syntax errors, logic flaws, or unexpected query result outputs through systematic query analysis."
+          },
+          {
+            "id": "query-optimization-basics",
+            "title": "Query Optimization Basics",
+            "definition": "Query optimization basics focus on refining SQL code and utilizing indexes to improve query execution speed and efficiency."
+          },
+          {
+            "id": "documenting-sql-work",
+            "title": "Documenting SQL Work",
+            "definition": "Documenting SQL work involves adding comments, inline notes, and structural documentation to explain query design and complex logic."
+          },
+          {
+            "id": "version-control-for-sql",
+            "title": "Version Control for SQL",
+            "definition": "Version control for SQL tracks schema migrations and database script changes using source repositories to ensure deployment safety."
+          },
+          {
+            "id": "sql-development-best-practices",
+            "title": "SQL Development Best Practices",
+            "definition": "SQL development best practices emphasize writing clean code, utilizing consistent formatting, avoiding unnecessary subqueries, and safeguarding data access."
+          },
+          {
+            "id": "real-world-sql-developer-workflow",
+            "title": "Real-World SQL Developer Workflow",
+            "definition": "A real-world SQL workflow moves from business analysis and schema mapping to iterative query development, testing, and deployment."
+          }
+        ]
+      }
+    ]
   }
 ]

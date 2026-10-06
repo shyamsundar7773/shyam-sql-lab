@@ -24,7 +24,14 @@ import { DesignTokens } from '@/constants/theme';
 import { useAuth } from '@/contexts/auth-context';
 import { useAppTheme } from '@/contexts/theme-context';
 import { askTopicQuestion } from '@/lib/api';
-import { canSendTopicMessage, getSubtopicContext, getTopicContext } from '@/lib/learning-content';
+import {
+  canSendTopicMessage,
+  getSelectedSubtopicContext,
+  getSubtopicContext,
+  getSubtopicConversationIdentity,
+  getTopicContext,
+} from '@/lib/learning-content';
+import { completeAcceptedLearningPrompt } from '@/lib/learning-progress';
 import { supabase } from '@/lib/supabase';
 import { createTopicLesson } from '@/lib/topic-lesson';
 import type {
@@ -39,6 +46,7 @@ type FeedItem =
 
 type RetryRequest = {
   question: string;
+  userMessageId: string;
   history: { role: 'user' | 'assistant'; content: string }[];
 };
 
@@ -52,28 +60,37 @@ type LearningPathNoteContext = {
 export default function TopicLearningChatScreen() {
   const { categoryId, topicId, subtopicId } = useLocalSearchParams<{
     categoryId?: string;
-    topicId: string;
+    topicId?: string;
     subtopicId?: string;
   }>();
-  const context = getTopicContext(topicId);
-  const resolvedCategoryId = categoryId ?? context?.category.id;
-  const resolvedSubtopicId = subtopicId ?? context?.topic.subtopics[0]?.id;
-  const selectedSubtopic =
-    resolvedCategoryId && resolvedSubtopicId
-      ? getSubtopicContext(resolvedCategoryId, topicId, resolvedSubtopicId)?.subtopic ?? null
+  const context = topicId ? getTopicContext(topicId) : null;
+  const selectedPath = getSelectedSubtopicContext(categoryId, topicId, subtopicId);
+  const conversationIdentity =
+    categoryId && topicId && subtopicId
+      ? getSubtopicConversationIdentity(categoryId, topicId, subtopicId)
       : null;
 
-  if (context && selectedSubtopic && (!categoryId || categoryId === context.category.id)) {
+  if (
+    context &&
+    selectedPath &&
+    conversationIdentity &&
+    selectedPath.category.id === context.category.id
+  ) {
     return (
       <TopicConversation
-        key={`${context.category.id}:${context.topic.id}:${selectedSubtopic?.id ?? ''}`}
+        key={JSON.stringify([
+          conversationIdentity.categoryId,
+          conversationIdentity.topicId,
+          conversationIdentity.subtopicId,
+        ])}
         context={context}
-        selectedSubtopic={selectedSubtopic}
+        selectedSubtopic={selectedPath.subtopic}
+        conversationIdentity={conversationIdentity}
       />
     );
   }
 
-  return <TopicUnavailable />;
+  return <TopicUnavailable message="Choose a Category, Topic, and Subtopic in Learning Path to open a lesson." />;
 }
 
 function TopicUnavailable({ message = 'This topic could not be found.' }: { message?: string }) {
@@ -95,11 +112,13 @@ function TopicUnavailable({ message = 'This topic could not be found.' }: { mess
 function TopicConversation({
   context,
   selectedSubtopic,
+  conversationIdentity,
 }: {
   context: NonNullable<ReturnType<typeof getTopicContext>>;
   selectedSubtopic: NonNullable<ReturnType<typeof getSubtopicContext>>['subtopic'];
+  conversationIdentity: NonNullable<ReturnType<typeof getSubtopicConversationIdentity>>;
 }) {
-  const { category, topic, previousTopic, nextTopic } = context;
+  const { category, topic } = context;
   const { user, session } = useAuth();
   const userId = user?.id;
   const { colors } = useAppTheme();
@@ -107,11 +126,14 @@ function TopicConversation({
   const shellContentScrollable = useAppShellContentScrollable();
   const stylesForTheme = useMemo(() => makeStyles(colors), [colors]);
   const localLesson = useMemo(
-    () => createTopicLesson(topic, selectedSubtopic ?? undefined),
+    () => createTopicLesson(topic, selectedSubtopic),
     [selectedSubtopic, topic],
   );
   const [conversation, setConversation] = useState<LearningConversation | null>(null);
-  const [lesson, setLesson] = useState<TopicLesson>(localLesson);
+  const lesson = localLesson;
+  const [followUpCount, setFollowUpCount] = useState(0);
+  const [progressLoading, setProgressLoading] = useState(true);
+  const [progressError, setProgressError] = useState('');
   const [messages, setMessages] = useState<LearningChatMessage[]>([]);
   const [learningNotes, setLearningNotes] = useState<LearningPathNoteContext[]>([]);
   const [notesContextError, setNotesContextError] = useState('');
@@ -159,56 +181,36 @@ function TopicConversation({
 
       try {
         const client = supabase;
-        const query = (moduleId: string | null) => {
-          let conversationQuery = client
+        const query = () =>
+          client
             .from('learning_conversations')
             .select('*')
             .eq('user_id', userId)
-            .eq('category_id', category.id)
-            .eq('topic_id', topic.id);
-          conversationQuery =
-            moduleId === null
-              ? conversationQuery.is('module_id', null)
-              : conversationQuery.eq('module_id', moduleId);
-          return conversationQuery.maybeSingle();
-        };
+            .eq('category_id', conversationIdentity.categoryId)
+            .eq('topic_id', conversationIdentity.topicId)
+            .eq('subtopic_id', conversationIdentity.subtopicId)
+            .is('module_id', null)
+            .maybeSingle();
 
-        let { data, error } = await query(null);
+        let { data, error } = await query();
         if (error) {
           throw error;
         }
 
         if (!data) {
-          const legacyResult = await query(category.id);
-          if (legacyResult.error) {
-            throw legacyResult.error;
-          }
-          data = legacyResult.data;
-        }
-
-        if (!data) {
-          const insertConversation = (moduleId: string | null) =>
-            client
-              .from('learning_conversations')
-              .insert({
-                user_id: userId,
-                category_id: category.id,
-                ...(moduleId === null ? {} : { module_id: moduleId }),
-                topic_id: topic.id,
-                lesson_content: localLesson,
-              })
-              .select('*')
-              .single();
-
-          let created = await insertConversation(null);
-          if (created.error?.code === '23502') {
-            created = await insertConversation(category.id);
-          }
+          const created = await client
+            .from('learning_conversations')
+            .insert({
+              user_id: userId,
+              category_id: conversationIdentity.categoryId,
+              topic_id: conversationIdentity.topicId,
+              subtopic_id: conversationIdentity.subtopicId,
+              lesson_content: localLesson,
+            })
+            .select('*')
+            .single();
           if (created.error?.code === '23505') {
-            ({ data, error } = await query(null));
-            if (!error && !data) {
-              ({ data, error } = await query(category.id));
-            }
+            ({ data, error } = await query());
           } else {
             data = created.data;
             error = created.error;
@@ -236,7 +238,6 @@ function TopicConversation({
 
         if (!cancelled) {
           setConversation(currentConversation);
-          setLesson(localLesson);
           setMessages((result.data ?? []) as LearningChatMessage[]);
           setLoading(false);
         }
@@ -257,9 +258,61 @@ function TopicConversation({
     };
   }, [
     category.id,
+    conversationIdentity.categoryId,
+    conversationIdentity.subtopicId,
+    conversationIdentity.topicId,
     loadAttempt,
     localLesson,
     topic.id,
+    userId,
+  ]);
+
+  useEffect(() => {
+    let active = true;
+    const loadProgress = async () => {
+      if (!userId || !supabase) {
+        setFollowUpCount(0);
+        setProgressError(userId
+          ? 'Progress storage is not configured.'
+          : 'Sign in to save learning progress.');
+        setProgressLoading(false);
+        return;
+      }
+      try {
+        const { data, error } = await supabase
+          .from('learning_subtopic_progress')
+          .select('follow_up_count')
+          .eq('user_id', userId)
+          .eq('category_id', conversationIdentity.categoryId)
+          .eq('topic_id', conversationIdentity.topicId)
+          .eq('subtopic_id', conversationIdentity.subtopicId)
+          .maybeSingle();
+        if (error) {
+          throw error;
+        }
+        if (active) {
+          setFollowUpCount(data?.follow_up_count ?? 0);
+          setProgressError('');
+        }
+      } catch (error) {
+        if (active) {
+          setFollowUpCount(0);
+          setProgressError(getErrorMessage(error, 'Learning progress could not be loaded.'));
+        }
+      } finally {
+        if (active) {
+          setProgressLoading(false);
+        }
+      }
+    };
+    void Promise.resolve().then(loadProgress);
+    return () => {
+      active = false;
+    };
+  }, [
+    conversationIdentity.categoryId,
+    conversationIdentity.subtopicId,
+    conversationIdentity.topicId,
     userId,
   ]);
 
@@ -277,6 +330,7 @@ function TopicConversation({
           .eq('user_id', userId)
           .eq('category_id', category.id)
           .eq('topic_id', topic.id)
+          .eq('subtopic_id', selectedSubtopic.id)
           .order('created_at', { ascending: true })
           .limit(20);
         if (result.error) {
@@ -299,45 +353,53 @@ function TopicConversation({
     return () => {
       active = false;
     };
-  }, [category.id, topic.id, userId]);
+  }, [category.id, selectedSubtopic.id, topic.id, userId]);
 
   const addAssistantReply = useCallback(
     async (request: RetryRequest, currentConversation: LearningConversation) => {
       const accessToken = session?.access_token;
-      if (!accessToken || !supabase) {
+      const client = supabase;
+      if (!accessToken || !client) {
         throw new Error('Your session is unavailable. Sign in again before requesting a reply.');
       }
 
-      const result = await askTopicQuestion({
-        accessToken,
-        categoryId: category.id,
-        topicId: topic.id,
-        subtopicId: selectedSubtopic.id,
-        category: category.title,
-        topic: topic.title,
-        officialContent: JSON.stringify({
-          canonicalPath: {
-            categoryId: category.id,
-            topicId: topic.id,
-            subtopicId: selectedSubtopic.id,
-          },
-          officialLesson: lesson,
+      const { response, followUpCount } = await completeAcceptedLearningPrompt(
+        () => askTopicQuestion({
+          accessToken,
+          categoryId: category.id,
+          topicId: topic.id,
+          subtopicId: selectedSubtopic.id,
           savedLearningNotes: learningNotes.slice(-3).map((note) => ({
             title: note.title,
             source: note.source_type,
             content: note.content.slice(0, 1_200),
           })),
+          history: request.history,
+          question: request.question,
         }),
-        history: request.history,
-        question: request.question,
-      });
+        async () => {
+          const progress = await client.rpc('record_learning_subtopic_progress', {
+            p_conversation_id: currentConversation.id,
+            p_user_message_id: request.userMessageId,
+          });
+          if (progress.error) {
+            throw new Error(`The AI reply was received, but learning progress could not be saved: ${progress.error.message}`);
+          }
+          if (typeof progress.data !== 'number' || progress.data < 1) {
+            throw new Error('The AI reply was received, but the progress service returned an invalid count.');
+          }
+          return progress.data;
+        },
+      );
+      setFollowUpCount(followUpCount);
+      setProgressError('');
 
-      const inserted = await supabase
+      const inserted = await client
         .from('learning_chat_messages')
         .insert({
           conversation_id: currentConversation.id,
           role: 'assistant',
-          content: result.reply,
+          content: response.reply,
         })
         .select('id, conversation_id, role, content, created_at')
         .single();
@@ -352,13 +414,10 @@ function TopicConversation({
     },
     [
       category.id,
-      category.title,
       learningNotes,
-      lesson,
       selectedSubtopic.id,
       session?.access_token,
       topic.id,
-      topic.title,
     ],
   );
 
@@ -372,14 +431,11 @@ function TopicConversation({
     setSending(true);
     setSendError('');
     draftBeforeSend.current = draft;
-    const request: RetryRequest = {
-      question,
-      history: messages
-        .filter((message) => message.role === 'user' || message.role === 'assistant')
-        .slice(-20)
-        .map(({ role, content }) => ({ role, content: content.slice(0, 4000) })),
-    };
-    let userMessageSaved = false;
+    const history = messages
+      .filter((message) => message.role === 'user' || message.role === 'assistant')
+      .slice(-20)
+      .map(({ role, content }) => ({ role, content: content.slice(0, 4000) }));
+    let request: RetryRequest | null = null;
 
     try {
       const inserted = await supabase
@@ -396,7 +452,11 @@ function TopicConversation({
         throw inserted.error;
       }
 
-      userMessageSaved = true;
+      request = {
+        question,
+        userMessageId: inserted.data.id,
+        history,
+      };
       setMessages((current) => [...current, inserted.data as LearningChatMessage]);
       setDraft('');
       await addAssistantReply(request, conversation);
@@ -406,7 +466,7 @@ function TopicConversation({
         'Your message could not be sent. Check your connection and try again.',
       ));
 
-      if (userMessageSaved) {
+      if (request) {
         setRetryRequest(request);
       } else {
         setDraft(draftBeforeSend.current);
@@ -482,11 +542,27 @@ function TopicConversation({
   const returnToCategory = () =>
     router.push({
       pathname: '/learning-path',
-      params: { categoryId: category.id },
+      params: {
+        categoryId: category.id,
+        topicId: topic.id,
+        subtopicId: selectedSubtopic.id,
+      },
     });
 
-  const openTopic = (nextTopicId: string) =>
-    router.push({ pathname: '/topic', params: { topicId: nextTopicId } });
+  const topicSubtopicIndex = topic.subtopics.findIndex(
+    (subtopic) => subtopic.id === selectedSubtopic.id,
+  );
+  const previousSubtopic = topic.subtopics[topicSubtopicIndex - 1];
+  const nextSubtopic = topic.subtopics[topicSubtopicIndex + 1];
+  const openSubtopic = (nextSubtopicId: string) =>
+    router.push({
+      pathname: '/topic',
+      params: {
+        categoryId: category.id,
+        topicId: topic.id,
+        subtopicId: nextSubtopicId,
+      },
+    });
 
   return (
     <KeyboardAvoidingView
@@ -507,6 +583,38 @@ function TopicConversation({
           />
         </Pressable>
         <Text numberOfLines={1} style={stylesForTheme.compactTitle}>{topic.title}</Text>
+      </View>
+      <View
+        accessibilityLabel={
+          progressError
+            ? `Learning progress unavailable: ${progressError}`
+            : progressLoading
+              ? `${selectedSubtopic.title} progress loading`
+              : followUpCount
+                ? `${selectedSubtopic.title}, progress, ${followUpCount} follow-ups`
+                : `${selectedSubtopic.title}, not yet started`
+        }
+        style={[
+          stylesForTheme.progressSummary,
+          { backgroundColor: followUpCount ? colors.primarySoft : colors.surfaceMuted },
+        ]}>
+        <Text style={[stylesForTheme.progressSubtopic, { color: colors.primaryText }]}>
+          {selectedSubtopic.title}
+        </Text>
+        <Text
+          accessibilityRole={progressError ? 'alert' : undefined}
+          style={[
+            stylesForTheme.progressSummaryText,
+            { color: progressError ? colors.danger : followUpCount ? colors.primary : colors.secondaryText },
+          ]}>
+          {progressError
+            ? 'PROGRESS UNAVAILABLE'
+            : progressLoading
+              ? 'LOADING PROGRESS'
+              : followUpCount
+                ? `PROGRESS · ${followUpCount} FOLLOW-UP${followUpCount === 1 ? '' : 'S'}`
+                : 'NOT YET STARTED'}
+        </Text>
       </View>
 
       {shellContentScrollable ? (
@@ -556,10 +664,10 @@ function TopicConversation({
                   </View>
                 ) : null}
                 <TopicNavigation
-                  previousTitle={previousTopic?.title}
-                  nextTitle={nextTopic?.title}
-                  onPrevious={() => previousTopic && openTopic(previousTopic.id)}
-                  onNext={() => nextTopic && openTopic(nextTopic.id)}
+                  previousTitle={previousSubtopic?.title}
+                  nextTitle={nextSubtopic?.title}
+                  onPrevious={() => previousSubtopic && openSubtopic(previousSubtopic.id)}
+                  onNext={() => nextSubtopic && openSubtopic(nextSubtopic.id)}
                 />
               </View>
             }
@@ -623,13 +731,13 @@ function TopicConversation({
 
       <View style={[stylesForTheme.composer, { paddingBottom: Math.max(insets.bottom, 10) }]}>
         <ThemedTextInput
-          accessibilityLabel={`Ask anything about ${topic.title}`}
+          accessibilityLabel={`Ask anything about ${selectedSubtopic.title}`}
           editable={!sending}
           maxLength={4000}
           multiline
           onChangeText={setDraft}
           onSubmitEditing={() => void submitQuestion()}
-          placeholder={`Ask anything about ${topic.title}...`}
+          placeholder={`Ask anything about ${selectedSubtopic.title}...`}
           returnKeyType="send"
           style={stylesForTheme.input}
           value={draft}
@@ -677,7 +785,11 @@ function LessonMessage({ lesson }: { lesson: TopicLesson }) {
         <Text style={[styles.sender, { color: colors.primary }]}>Shyam SQL Lab · LESSON</Text>
         <Card style={styles.lessonCard}>
           <Text style={[styles.lessonTitle, { color: colors.primaryText }]}>{lesson.title}</Text>
-          <Text style={[styles.lessonSummary, { color: colors.secondaryText }]}>{lesson.summary}</Text>
+          {lesson.summary ? (
+            <Text style={[styles.lessonSummary, { color: colors.secondaryText }]}>
+              {lesson.summary}
+            </Text>
+          ) : null}
           <MaterialSection title="What you’ll learn" items={lesson.explanation} />
           {lesson.examples.map((example, index) => (
             <View key={`${example.title}-${index}`} style={styles.lessonSection}>
@@ -690,39 +802,10 @@ function LessonMessage({ lesson }: { lesson: TopicLesson }) {
               </View>
             </View>
           ))}
-          {lesson.subtopics.map((subtopic) => (
-            <View key={subtopic.id} style={styles.lessonSection}>
-              <Text style={[styles.sectionTitle, { color: colors.primaryText }]}>{subtopic.title}</Text>
-              {subtopic.explanation.map((paragraph, index) => (
-                <Text key={`${subtopic.id}-${index}`} style={[styles.bodyText, { color: colors.secondaryText }]}>
-                  {paragraph}
-                </Text>
-              ))}
-              {subtopic.examples.map((example, index) => (
-                <View key={`${subtopic.id}-${example.title}-${index}`} style={styles.subtopicExample}>
-                  <Text style={[styles.sectionTitle, { color: colors.primaryText }]}>{example.title}</Text>
-                  <Text style={[styles.bodyText, { color: colors.secondaryText }]}>{example.explanation}</Text>
-                  <View style={[styles.codeCard, { backgroundColor: colors.codeBackground, borderColor: colors.border }]}>
-                    <ScrollView horizontal showsHorizontalScrollIndicator>
-                      <Text selectable style={[styles.code, { color: colors.codeText }]}>{example.code}</Text>
-                    </ScrollView>
-                  </View>
-                </View>
-              ))}
-            </View>
-          ))}
           <MaterialSection title="Key points" items={lesson.keyPoints} />
           <MaterialSection title="Common mistakes" items={lesson.commonMistakes} />
-          <MaterialSection title="Practice questions" items={lesson.practiceQuestions} />
-          <MaterialSection title="Interview points" items={lesson.interviewQuestions} />
-          {lesson.subtopics.map((subtopic) => (
-            <View key={`${subtopic.id}-review`} style={styles.lessonSection}>
-              <MaterialSection title={`${subtopic.title} · Key points`} items={subtopic.keyPoints} />
-              <MaterialSection title={`${subtopic.title} · Common mistakes`} items={subtopic.commonMistakes} />
-              <MaterialSection title={`${subtopic.title} · Practice`} items={subtopic.practiceQuestions} />
-              <MaterialSection title={`${subtopic.title} · Interview`} items={subtopic.interviewQuestions} />
-            </View>
-          ))}
+          <MaterialSection title="Practice guidance" items={lesson.practiceQuestions} />
+          <MaterialSection title="Interview relevance" items={lesson.interviewQuestions} />
         </Card>
       </View>
     </View>
@@ -804,13 +887,13 @@ function TopicNavigation({
     <View style={styles.topicNavigation}>
       {previousTitle ? (
         <Pressable accessibilityRole="button" onPress={onPrevious} style={[styles.topicNavButton, { borderColor: colors.border }]}>
-          <Text style={[styles.navCaption, { color: colors.primary }]}>PREVIOUS TOPIC</Text>
+          <Text style={[styles.navCaption, { color: colors.primary }]}>PREVIOUS SUBTOPIC</Text>
           <Text numberOfLines={2} style={[styles.navTitle, { color: colors.primaryText }]}>{previousTitle}</Text>
         </Pressable>
       ) : <View style={styles.topicNavSpacer} />}
       {nextTitle ? (
         <Pressable accessibilityRole="button" onPress={onNext} style={[styles.topicNavButton, styles.nextNav, { borderColor: colors.border }]}>
-          <Text style={[styles.navCaption, { color: colors.primary }]}>NEXT TOPIC</Text>
+          <Text style={[styles.navCaption, { color: colors.primary }]}>NEXT SUBTOPIC</Text>
           <Text numberOfLines={2} style={[styles.navTitle, styles.nextText, { color: colors.primaryText }]}>{nextTitle}</Text>
         </Pressable>
       ) : null}
@@ -854,6 +937,28 @@ function makeStyles(colors: ReturnType<typeof import('@/constants/theme').getThe
       fontSize: 14,
       lineHeight: 20,
       fontWeight: '700',
+    },
+    progressSummary: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: 8,
+      paddingHorizontal: 12,
+      paddingVertical: 9,
+      marginBottom: 6,
+      borderRadius: DesignTokens.radius.small,
+    },
+    progressSubtopic: {
+      flex: 1,
+      minWidth: 120,
+      fontSize: 12,
+      fontWeight: '700',
+    },
+    progressSummaryText: {
+      fontSize: 10,
+      fontWeight: '800',
+      letterSpacing: 0.2,
     },
     listContainer: {
       flex: 1,
@@ -974,10 +1079,6 @@ function makeStyles(colors: ReturnType<typeof import('@/constants/theme').getThe
       fontSize: 14,
       lineHeight: 22,
       flexShrink: 1,
-    },
-    subtopicExample: {
-      gap: 6,
-      marginTop: 5,
     },
     messageRow: {
       flexDirection: 'row',

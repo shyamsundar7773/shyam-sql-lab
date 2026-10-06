@@ -8,9 +8,9 @@ export type LearningPathTaxonomy = {
   topics: {
     id: string;
     title: string;
-    summary: string;
-    estimatedMinutes: number;
-    subtopics: { id: string; title: string }[];
+    summary?: string;
+    estimatedMinutes?: number;
+    subtopics: { id: string; title: string; definition?: string }[];
   }[];
 }[];
 
@@ -68,13 +68,21 @@ export function buildLearningCategories(
     topics: category.topics.map((topic): Topic => {
         const topicContent = legacyContent[topic.id];
         const subtopics = topic.subtopics.map((subtopic) => {
-          const material = approvedByPath.get(
+            const approvedEntry = approvedByPath.get(
             `${category.id}:${topic.id}:${subtopic.id}`,
-          )?.content ??
-            topicContent?.subtopics[subtopic.id] ??
-            emptyMaterial;
-          return { id: subtopic.id, title: subtopic.title, ...material };
-        });
+            );
+            const material = approvedEntry?.content ??
+              (subtopic.definition
+                ? { ...emptyMaterial, explanation: [subtopic.definition] }
+                : topicContent?.subtopics[subtopic.id]) ??
+              emptyMaterial;
+            return {
+              id: subtopic.id,
+              title: subtopic.title,
+              ...(subtopic.definition ? { definition: subtopic.definition } : {}),
+              ...material,
+            };
+          });
         const importedTopicContent = approvedContent
           .filter((entry) => entry.categoryId === category.id && entry.topicId === topic.id)
           .map((entry) => {
@@ -93,8 +101,8 @@ export function buildLearningCategories(
         return {
           id: topic.id,
           title: topic.title,
-          summary: topic.summary,
-          estimatedMinutes: topic.estimatedMinutes,
+          summary: topic.summary ?? '',
+          estimatedMinutes: topic.estimatedMinutes ?? 0,
           ...(importedTopicContent.length > 0
             ? combineMaterials(importedTopicContent)
             : topicContent?.topic ?? emptyMaterial),
