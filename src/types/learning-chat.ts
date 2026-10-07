@@ -1,6 +1,43 @@
-import type { Topic } from '@/types/learning-content';
+﻿import type { Topic } from '@/types/learning-content';
 
 export type LearningChatRole = 'assistant' | 'user';
+
+export type RuntimeSequenceItem = {
+  id: string;
+  title: string;
+  items?: RuntimeSequenceItem[];
+};
+
+export type RuntimeTeachingCompletion = 'not-started' | 'incomplete' | 'complete';
+
+export type TopicChatRuntimeState = {
+  categoryId: string;
+  topicId: string;
+  subtopicId: string;
+  sequence: RuntimeSequenceItem[];
+  currentPath: number[] | null;
+  completion: RuntimeTeachingCompletion;
+  responseIncomplete: boolean;
+  sequenceFinished?: boolean;
+  latestIntent: TopicChatIntent;
+};
+
+export type TopicChatIntent =
+  | 'sequence-generation'
+  | 'explicit-runtime-item-selection'
+  | 'continue-runtime-item'
+  | 'ordinary-topic-question';
+
+export type TopicLessonProgress = {
+  sectionIndex: number;
+  sectionTitle: string;
+  focusIndex: number | null;
+  focusTitle: string | null;
+  sectionComplete: boolean;
+  hasNextSection: boolean;
+  nextSectionTitle: string | null;
+  nextFocusTitle: string | null;
+};
 
 export type TopicLesson = Pick<
   Topic,

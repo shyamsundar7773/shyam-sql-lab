@@ -1,6 +1,14 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import type { Server } from "node:http";
 import { after, before, test } from "node:test";
+
+import { sqlLearningCategories } from "../../../src/data/sqlLearningContent.js";
+import {
+  createTopicLessonSections,
+  getNextRuntimeItemPath,
+  getRuntimeSequenceItem,
+  topicChatIncompleteNotice,
+} from "../../../src/lib/topic-lesson.js";
 
 let baseUrl: string;
 let server: Server;
@@ -35,6 +43,7 @@ test("health check responds successfully to GET and POST", async () => {
     assert.deepEqual(await response.json(), {
       status: "ok",
       service: "shyam-sql-lab-api",
+      buildRevision: process.env.RENDER_GIT_COMMIT?.slice(0, 12) ?? null,
     });
   }
 });
@@ -88,6 +97,11 @@ test("learning chat rejects requests without authentication", async () => {
       categoryId: "missing-category",
       topicId: "select-statements",
       subtopicId: "selecting-columns",
+    },
+    {
+      categoryId: "sql-data-types",
+      topicId: "what-is-sql",
+      subtopicId: "introduction-to-sql",
     },
     {
       categoryId: "sql-foundations",
@@ -158,10 +172,12 @@ test("Topic Chat accepts a normal subtopic-grounded follow-up without practice q
       return new Response(
         JSON.stringify({
           choices: [{
-            message: { content: "Hi! What would you like to learn?" },
+            message: {
+              content: "A SELECT statement chooses which columns appear in a query result.\n\nFor example, `SELECT employee_name FROM employees;` returns only the employee_name column. Use a comma-separated list after SELECT when you need multiple columns; the selected column order determines the output order.",
+            },
             finish_reason: "stop",
           }],
-          usage: { completion_tokens: 10 },
+          usage: { completion_tokens: 72 },
         }),
         { status: 200 },
       );
@@ -190,14 +206,38 @@ test("Topic Chat accepts a normal subtopic-grounded follow-up without practice q
           { role: "user", content: "What is a column?" },
           { role: "assistant", content: "A column stores one kind of value in a table." },
         ],
-        question: "hi",
+        question: "Explain selecting columns.",
       }),
     });
     assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), {
-      reply: "Hi! What would you like to learn?",
+    const responseBody = await response.json() as {
+      reply: string;
+      mode: string;
+      incomplete: boolean;
+      lessonProgress: {
+        sectionIndex: number;
+        sectionTitle: string;
+        sectionComplete: boolean;
+        hasNextSection: boolean;
+        nextSectionTitle: string | null;
+      };
+    };
+    const selectingColumns = sqlLearningCategories
+      .find((category) => category.id === "sql-foundations")!
+      .topics.find((topic) => topic.id === "select-statements")!
+      .subtopics.find((subtopic) => subtopic.id === "selecting-columns")!;
+    const selectingColumnSections = createTopicLessonSections(selectingColumns);
+    assert.deepEqual(responseBody, {
+      reply: `## Lesson Section 1 of ${selectingColumnSections.length}: ${selectingColumnSections[0].title}\n\nA SELECT statement chooses which columns appear in a query result.\n\nFor example, \`SELECT employee_name FROM employees;\` returns only the employee_name column. Use a comma-separated list after SELECT when you need multiple columns; the selected column order determines the output order.`,
       mode: "ai",
       incomplete: false,
+      lessonProgress: {
+        sectionIndex: 1,
+        sectionTitle: selectingColumnSections[0].title,
+        sectionComplete: true,
+        hasNextSection: true,
+        nextSectionTitle: selectingColumnSections[1].title,
+      },
     });
     assert.equal(groqRequests.length, 1);
     assert.equal(groqRequests[0].model, "openai/gpt-oss-120b");
@@ -205,6 +245,17 @@ test("Topic Chat accepts a normal subtopic-grounded follow-up without practice q
     assert.match(groqRequests[0].messages[0].content, /category_id=sql-foundations/);
     assert.match(groqRequests[0].messages[0].content, /topic_id=select-statements/);
     assert.match(groqRequests[0].messages[0].content, /subtopic_id=selecting-columns/);
+    assert.match(
+      groqRequests[0].messages[0].content,
+      /CURRENT CURRICULUM UNIT:\nCategory: SQL Foundations\nTopic: SELECT Statements\nSubtopic: Selecting Columns/,
+    );
+    assert.match(groqRequests[0].messages[0].content, /You are teaching ONE CURRENT RUNTIME LEARNING ITEM/);
+    assert.match(groqRequests[0].messages[0].content, /Teach the CURRENT RUNTIME LEARNING ITEM, not the whole subtopic/);
+    assert.match(groqRequests[0].messages[0].content, /Do not output a giant structured lesson, document, Part I\/II outline/);
+    assert.match(groqRequests[0].messages[0].content, /CURRENT RUNTIME LEARNING ITEM:\nItem 1 of \d+: Core Idea: Selecting Columns/);
+    assert.match(groqRequests[0].messages[0].content, /Teach only this item\. Finish it before stopping/);
+    assert.match(groqRequests[0].messages[0].content, /Do not start the next runtime item/);
+    assert.match(groqRequests[0].messages[0].content, /The runtime list is navigation metadata only/);
     assert.match(
       groqRequests[0].messages[0].content,
       /A SELECT statement defines which columns should appear in a SQL query result/,
@@ -217,7 +268,7 @@ test("Topic Chat accepts a normal subtopic-grounded follow-up without practice q
     assert.deepEqual(groqRequests[0].messages.slice(-3), [
       { role: "user", content: "What is a column?" },
       { role: "assistant", content: "A column stores one kind of value in a table." },
-      { role: "user", content: "hi" },
+      { role: "user", content: "Explain selecting columns." },
     ]);
 
     const newCategoryResponse = await fetch(`${baseUrl}/api/learning-chat`, {
@@ -248,6 +299,7 @@ test("Topic Chat accepts a normal subtopic-grounded follow-up without practice q
       groqRequests[1].messages[0].content,
       /Structured Query Language is the standardized programming language used to manage, query, and manipulate data stored in relational databases\./,
     );
+    assert.match(groqRequests[1].messages[0].content, /The current item is the content target\. The sequence list is just a learning plan for navigation\./i);
     assert.equal(groqRequests[1].messages.at(-1)?.content, "What does SQL do?");
 
     const separateSubtopic = await fetch(`${baseUrl}/api/learning-chat`, {
@@ -278,6 +330,196 @@ test("Topic Chat accepts a normal subtopic-grounded follow-up without practice q
       false,
     );
     assert.equal(groqRequests[2].messages.at(-1)?.content, "Why use SQL?");
+
+    const selectingColumnsSectionHeading =
+      `## Lesson Section 1 of ${selectingColumnSections.length}: ${selectingColumnSections[0].title}\n\n`;
+    for (const question of ["Give me another example.", "Go deeper."]) {
+      const followUpResponse = await fetch(`${baseUrl}/api/learning-chat`, {
+        method: "POST",
+        headers: {
+          Authorization: ["Bearer", "test-token"].join(" "),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          categoryId: "sql-foundations",
+          topicId: "select-statements",
+          subtopicId: "selecting-columns",
+          history: [
+            { role: "user", content: "Explain selecting columns." },
+            {
+              role: "assistant",
+              content: `${selectingColumnsSectionHeading}A SELECT statement chooses query result columns.`,
+            },
+          ],
+          question,
+        }),
+      });
+      assert.equal(followUpResponse.status, 200);
+    }
+    assert.equal(groqRequests.length, 5);
+    for (const requestBody of groqRequests.slice(3)) {
+      assert.match(requestBody.messages[0].content, /Category: SQL Foundations\nTopic: SELECT Statements\nSubtopic: Selecting Columns/);
+      assert.match(requestBody.messages[0].content, /Do not teach or preview the next subtopic/);
+      assert.match(requestBody.messages[0].content, /CURRENT RUNTIME LEARNING ITEM:\nItem 1 of \d+: Core Idea: Selecting Columns/);
+      assert.match(requestBody.messages.at(-1)?.content ?? "", /another example|go deeper/i);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousEnvironment.supabaseUrl === undefined) delete process.env.SUPABASE_URL;
+    else process.env.SUPABASE_URL = previousEnvironment.supabaseUrl;
+    if (previousEnvironment.supabaseKey === undefined) delete process.env.SUPABASE_PUBLISHABLE_KEY;
+    else process.env.SUPABASE_PUBLISHABLE_KEY = previousEnvironment.supabaseKey;
+    if (previousEnvironment.groqKey === undefined) delete process.env.GROQ_API_KEY;
+    else process.env.GROQ_API_KEY = previousEnvironment.groqKey;
+    if (previousEnvironment.groqModel === undefined) delete process.env.GROQ_MODEL;
+    else process.env.GROQ_MODEL = previousEnvironment.groqModel;
+  }
+});
+
+test("Topic Chat Continue advances sections only within the current subtopic", async () => {
+  const originalFetch = globalThis.fetch;
+  const previousEnvironment = {
+    supabaseUrl: process.env.SUPABASE_URL,
+    supabaseKey: process.env.SUPABASE_PUBLISHABLE_KEY,
+    groqKey: process.env.GROQ_API_KEY,
+    groqModel: process.env.GROQ_MODEL,
+  };
+  const providerRequests: {
+    messages: { role: string; content: string }[];
+  }[] = [];
+  process.env.SUPABASE_URL = "https://supabase.test";
+  process.env.SUPABASE_PUBLISHABLE_KEY = "test-publishable-key";
+  process.env.GROQ_API_KEY = "test-groq-key";
+  process.env.GROQ_MODEL = "openai/gpt-oss-120b";
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url.startsWith(baseUrl)) {
+      return originalFetch(input, init);
+    }
+    if (url.endsWith("/auth/v1/user")) {
+      return new Response(JSON.stringify({ id: "test-user" }), { status: 200 });
+    }
+    if (url === "https://api.groq.com/openai/v1/chat/completions") {
+      providerRequests.push(JSON.parse(String(init?.body)) as {
+        messages: { role: string; content: string }[];
+      });
+      return new Response(JSON.stringify({
+        choices: [{
+          message: { content: "A complete explanation for this section." },
+          finish_reason: "stop",
+        }],
+        usage: { completion_tokens: 35 },
+      }), { status: 200 });
+    }
+    throw new Error(`Unexpected outbound request: ${url}`);
+  };
+
+  try {
+    const category = sqlLearningCategories.find((item) => item.id === "sql-database-fundamentals")!;
+    const topic = category.topics.find((item) => item.id === "what-is-sql")!;
+    const subtopic = topic.subtopics[0];
+    const sections = createTopicLessonSections(subtopic);
+    const requestHeaders = {
+      Authorization: ["Bearer", "test-token"].join(" "),
+      "Content-Type": "application/json",
+    };
+    const path = {
+      categoryId: category.id,
+      topicId: topic.id,
+      subtopicId: subtopic.id,
+    };
+    const firstQuestion = "Teach me this subtopic properly from the basics.";
+    const firstResponse = await fetch(`${baseUrl}/api/learning-chat`, {
+      method: "POST",
+      headers: requestHeaders,
+      body: JSON.stringify({ ...path, history: [], question: firstQuestion }),
+    });
+    assert.equal(firstResponse.status, 200);
+    let result = await firstResponse.json() as {
+      reply: string;
+      lessonProgress: {
+        sectionIndex: number;
+        sectionTitle: string;
+        sectionComplete: boolean;
+        hasNextSection: boolean;
+        nextSectionTitle: string | null;
+      };
+    };
+    assert.deepEqual(result.lessonProgress, {
+      sectionIndex: 1,
+      sectionTitle: sections[0].title,
+      sectionComplete: true,
+      hasNextSection: true,
+      nextSectionTitle: sections[1].title,
+    });
+    let history: { role: string; content: string }[] = [
+      { role: "user", content: firstQuestion },
+      { role: "assistant", content: result.reply },
+    ];
+
+    for (let sectionIndex = 2; sectionIndex <= sections.length; sectionIndex += 1) {
+      const question = `Continue to the next lesson section: ${sections[sectionIndex - 1].title}.`;
+      const response = await fetch(`${baseUrl}/api/learning-chat`, {
+        method: "POST",
+        headers: requestHeaders,
+        body: JSON.stringify({
+          ...path,
+          history,
+          question,
+          lessonAction: { type: "next-section" },
+        }),
+      });
+      assert.equal(response.status, 200);
+      result = await response.json() as typeof result;
+      assert.equal(result.lessonProgress.sectionIndex, sectionIndex);
+      assert.equal(result.lessonProgress.sectionTitle, sections[sectionIndex - 1].title);
+      assert.equal(result.lessonProgress.sectionComplete, true);
+      assert.equal(result.lessonProgress.hasNextSection, sectionIndex < sections.length);
+      assert.equal(
+        result.lessonProgress.nextSectionTitle,
+        sections[sectionIndex]?.title ?? null,
+      );
+      assert.match(
+        providerRequests.at(-1)?.messages[0].content ?? "",
+        /CURRENT RUNTIME LEARNING ITEM:\s*\n/i,
+      );
+      assert.match(
+        providerRequests.at(-1)?.messages[0].content ?? "",
+        new RegExp(`CURRENT RUNTIME LEARNING ITEM:\\s*\\n.*${sections[sectionIndex - 1].title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`),
+      );
+      assert.match(
+        providerRequests.at(-1)?.messages[0].content ?? "",
+        /Advance only after the current runtime item is fully taught/,
+      );
+      history = [
+        ...history,
+        { role: "user", content: question },
+        { role: "assistant", content: result.reply },
+      ];
+    }
+
+    const providerRequestCount = providerRequests.length;
+    const invalidAdvance = await fetch(`${baseUrl}/api/learning-chat`, {
+      method: "POST",
+      headers: requestHeaders,
+      body: JSON.stringify({
+        ...path,
+        history,
+        question: "Continue to another section.",
+        lessonAction: { type: "next-section" },
+      }),
+    });
+    assert.equal(invalidAdvance.status, 400);
+    assert.deepEqual(await invalidAdvance.json(), {
+      code: "INVALID_LESSON_PROGRESSION",
+      error: "Complete the current lesson section before requesting its next section.",
+    });
+    assert.equal(providerRequests.length, providerRequestCount);
+    assert.ok(providerRequests.every((request) =>
+      request.messages[0].content.includes(
+        `category_id=${category.id}, topic_id=${topic.id}, subtopic_id=${subtopic.id}`,
+      ),
+    ));
   } finally {
     globalThis.fetch = originalFetch;
     if (previousEnvironment.supabaseUrl === undefined) delete process.env.SUPABASE_URL;
@@ -303,6 +545,7 @@ test("Topic Chat detects output limits and continues from the saved reply", asyn
   const continuationReply = "That completes the explanation.";
   const providerResponses = [
     { content: providerReply, finishReason: "length" },
+    { content: continuationReply, finishReason: "stop" },
     { content: continuationReply, finishReason: "stop" },
   ];
   const groqRequests: Array<{
@@ -365,14 +608,28 @@ test("Topic Chat detects output limits and continues from the saved reply", asyn
       reply: string;
       mode: string;
       incomplete: boolean;
+      lessonProgress: {
+        sectionIndex: number;
+        sectionTitle: string;
+        sectionComplete: boolean;
+        hasNextSection: boolean;
+        nextSectionTitle: string | null;
+      };
     };
     assert.equal(firstResult.mode, "ai");
     assert.equal(firstResult.incomplete, true);
     assert.equal(
       firstResult.reply,
-      `${providerReply}\n\n*This response reached the output limit and may be incomplete. Ask me to continue from where I stopped.*`,
+      `## Lesson Section 1 of ${createTopicLessonSections(
+        sqlLearningCategories.find((item) => item.id === "sql-foundations")!
+          .topics.find((item) => item.id === "select-statements")!
+          .subtopics.find((item) => item.id === "selecting-columns")!,
+      ).length}: Core Idea: Selecting Columns\n\n${providerReply}\n\n${topicChatIncompleteNotice}`,
     );
     assert.ok(firstResult.reply.length > 4_000);
+    assert.equal(firstResult.lessonProgress.sectionComplete, false);
+    assert.equal(firstResult.lessonProgress.hasNextSection, false);
+    assert.equal(firstResult.lessonProgress.nextSectionTitle, null);
 
     const continuationResponse = await fetch(`${baseUrl}/api/learning-chat`, {
       method: "POST",
@@ -389,10 +646,33 @@ test("Topic Chat detects output limits and continues from the saved reply", asyn
       }),
     });
     assert.equal(continuationResponse.status, 200);
-    assert.deepEqual(await continuationResponse.json(), {
-      reply: continuationReply,
+    const continuedResult = await continuationResponse.json() as {
+      reply: string;
+      mode: string;
+      incomplete: boolean;
+      lessonProgress: {
+        sectionIndex: number;
+        sectionTitle: string;
+        sectionComplete: boolean;
+        hasNextSection: boolean;
+        nextSectionTitle: string | null;
+      };
+    };
+    assert.deepEqual(continuedResult, {
+      reply: `${firstResult.reply.match(/^## Lesson Section \d+ of \d+: .+\n\n/)?.[0] ?? ""}${continuationReply}`,
       mode: "ai",
       incomplete: false,
+      lessonProgress: {
+        sectionIndex: 1,
+        sectionTitle: "Core Idea: Selecting Columns",
+        sectionComplete: true,
+        hasNextSection: true,
+        nextSectionTitle: createTopicLessonSections(
+          sqlLearningCategories.find((item) => item.id === "sql-foundations")!
+            .topics.find((item) => item.id === "select-statements")!
+            .subtopics.find((item) => item.id === "selecting-columns")!,
+        )[1].title,
+      },
     });
 
     assert.equal(groqRequests.length, 2);
@@ -403,7 +683,16 @@ test("Topic Chat detects output limits and continues from the saved reply", asyn
       requestBody.max_completion_tokens === 4_096,
     ));
     const continuationMessages = groqRequests[1].messages;
-    assert.match(continuationMessages[0].content, /continue directly from the point where that reply stopped/i);
+    assert.match(
+      continuationMessages[0].content,
+      /Continue the CURRENT RUNTIME ITEM from where the previous reply stopped/i,
+    );
+    assert.match(
+      continuationMessages[0].content,
+      /CURRENT CURRICULUM UNIT:\nCategory: SQL Foundations\nTopic: SELECT Statements\nSubtopic: Selecting Columns/,
+    );
+    assert.match(continuationMessages[0].content, /A manually typed continue also continues this same item/);
+    assert.match(continuationMessages[0].content, /Do not advance to the next runtime item unless this item is truly finished/);
     assert.match(continuationMessages[0].content, /category_id=sql-foundations/);
     assert.match(continuationMessages[0].content, /topic_id=select-statements/);
     assert.match(continuationMessages[0].content, /subtopic_id=selecting-columns/);
@@ -412,6 +701,27 @@ test("Topic Chat detects output limits and continues from the saved reply", asyn
       { role: "assistant", content: firstResult.reply },
       { role: "user", content: "continue" },
     ]);
+
+    const finishResponse = await fetch(`${baseUrl}/api/learning-chat`, {
+      method: "POST",
+      headers: requestHeaders,
+      body: JSON.stringify({
+        categoryId: "sql-foundations",
+        topicId: "select-statements",
+        subtopicId: "selecting-columns",
+        history: [
+          { role: "user", content: question },
+          { role: "assistant", content: firstResult.reply },
+        ],
+        question: "Finish the current lesson section.",
+        lessonAction: { type: "finish-section" },
+      }),
+    });
+    assert.equal(finishResponse.status, 200);
+    const finishedResult = await finishResponse.json() as typeof continuedResult;
+    assert.equal(finishedResult.lessonProgress.sectionIndex, 1);
+    assert.equal(finishedResult.lessonProgress.sectionComplete, true);
+    assert.match(groqRequests[2].messages[0].content, /Continue the CURRENT RUNTIME ITEM/);
   } finally {
     globalThis.fetch = originalFetch;
     if (previousEnvironment.supabaseUrl === undefined) delete process.env.SUPABASE_URL;
@@ -422,6 +732,998 @@ test("Topic Chat detects output limits and continues from the saved reply", asyn
     else process.env.GROQ_API_KEY = previousEnvironment.groqKey;
     if (previousEnvironment.groqModel === undefined) delete process.env.GROQ_MODEL;
     else process.env.GROQ_MODEL = previousEnvironment.groqModel;
+  }
+});
+
+test("Topic Chat returns structured provider errors without masking them", async () => {
+  const originalFetch = globalThis.fetch;
+  const previousEnvironment = {
+    supabaseUrl: process.env.SUPABASE_URL,
+    supabaseKey: process.env.SUPABASE_PUBLISHABLE_KEY,
+    groqKey: process.env.GROQ_API_KEY,
+  };
+  process.env.SUPABASE_URL = "https://supabase.test";
+  process.env.SUPABASE_PUBLISHABLE_KEY = "test-publishable-key";
+  process.env.GROQ_API_KEY = "test-groq-key";
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url.startsWith(baseUrl)) {
+      return originalFetch(input, init);
+    }
+    if (url.endsWith("/auth/v1/user")) {
+      return new Response(JSON.stringify({ id: "test-user" }), { status: 200 });
+    }
+    if (url === "https://api.groq.com/openai/v1/chat/completions") {
+      return new Response(JSON.stringify({ error: { message: "Provider unavailable." } }), {
+        status: 503,
+      });
+    }
+    throw new Error(`Unexpected outbound request: ${url}`);
+  };
+
+  try {
+    const response = await fetch(`${baseUrl}/api/learning-chat`, {
+      method: "POST",
+      headers: {
+        Authorization: ["Bearer", "test-token"].join(" "),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        categoryId: "sql-foundations",
+        topicId: "select-statements",
+        subtopicId: "selecting-columns",
+        history: [],
+        question: "Explain selecting columns.",
+      }),
+    });
+    assert.equal(response.status, 502);
+    assert.deepEqual(await response.json(), {
+      code: "TOPIC_CHAT_SERVER_ERROR",
+      error: "The AI tutor could not complete this request. Your runtime learning state was preserved; retry the same item.",
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousEnvironment.supabaseUrl === undefined) delete process.env.SUPABASE_URL;
+    else process.env.SUPABASE_URL = previousEnvironment.supabaseUrl;
+    if (previousEnvironment.supabaseKey === undefined) delete process.env.SUPABASE_PUBLISHABLE_KEY;
+    else process.env.SUPABASE_PUBLISHABLE_KEY = previousEnvironment.supabaseKey;
+    if (previousEnvironment.groqKey === undefined) delete process.env.GROQ_API_KEY;
+    else process.env.GROQ_API_KEY = previousEnvironment.groqKey;
+  }
+});
+
+test("Topic Chat provider failure preserves the prior state and a retry targets the same runtime item", async () => {
+  const originalFetch = globalThis.fetch;
+  const previousEnvironment = {
+    nodeEnv: process.env.NODE_ENV,
+    supabaseUrl: process.env.SUPABASE_URL,
+    supabaseKey: process.env.SUPABASE_PUBLISHABLE_KEY,
+    groqKey: process.env.GROQ_API_KEY,
+  };
+  const providerRequests: { messages: { role: string; content: string }[] }[] = [];
+  let failNextTeachingRequest = false;
+  process.env.NODE_ENV = "development";
+  process.env.SUPABASE_URL = "https://supabase.test";
+  process.env.SUPABASE_PUBLISHABLE_KEY = "test-publishable-key";
+  process.env.GROQ_API_KEY = "test-groq-key";
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url.startsWith(baseUrl)) {
+      return originalFetch(input, init);
+    }
+    if (url.endsWith("/auth/v1/user")) {
+      return new Response(JSON.stringify({ id: "test-user" }), { status: 200 });
+    }
+    if (url === "https://api.groq.com/openai/v1/chat/completions") {
+      const body = JSON.parse(String(init?.body)) as {
+        messages: { role: string; content: string }[];
+      };
+      providerRequests.push(body);
+      if (failNextTeachingRequest) {
+        failNextTeachingRequest = false;
+        return new Response(JSON.stringify({
+          error: {
+            type: "server_error",
+            code: "upstream_error",
+            message: "Provider unavailable.",
+          },
+        }), { status: 503 });
+      }
+      const systemPrompt = body.messages[0]?.content ?? "";
+      const content = systemPrompt.includes("Generate navigation metadata only")
+        ? JSON.stringify({
+            sequence: [
+              { title: "What SQL Stands For" },
+              { title: "Declarative vs Procedural" },
+              { title: "DDL" },
+              { title: "DML" },
+              { title: "Basic Retrieval" },
+            ],
+          })
+        : JSON.stringify({
+            reply: "Focused teaching for the current runtime item.",
+            itemComplete: true,
+          });
+      return new Response(JSON.stringify({
+        choices: [{ message: { content }, finish_reason: "stop" }],
+        usage: { completion_tokens: 60 },
+      }), { status: 200 });
+    }
+    throw new Error(`Unexpected outbound request: ${url}`);
+  };
+
+  try {
+    const canonicalPath = {
+      categoryId: "sql-database-fundamentals",
+      topicId: "what-is-sql",
+      subtopicId: "introduction-to-sql",
+    };
+    const postChat = (question: string, runtimeState?: unknown) =>
+      fetch(`${baseUrl}/api/learning-chat`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer test-token",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ ...canonicalPath, question, history: [], runtimeState }),
+      });
+    const planResponse = await postChat("Give me a logical learning sequence for Introduction to SQL.");
+    assert.equal(planResponse.status, 200);
+    const plan = await planResponse.json() as { runtimeState: Record<string, unknown> };
+
+    const firstResponse = await postChat("start with 1", plan.runtimeState);
+    assert.equal(firstResponse.status, 200);
+    const first = await firstResponse.json() as {
+      runtimeState: {
+        categoryId: string;
+        topicId: string;
+        subtopicId: string;
+        sequence: { id: string; title: string }[];
+        currentPath: number[];
+        completion: string;
+        sequenceFinished?: boolean;
+      };
+    };
+    assert.deepEqual(first.runtimeState.currentPath, [0]);
+    assert.equal(first.runtimeState.completion, "complete");
+
+    const secondResponse = await postChat("continue", first.runtimeState);
+    assert.equal(secondResponse.status, 200);
+    const second = await secondResponse.json() as { runtimeState: typeof first.runtimeState };
+    assert.deepEqual(second.runtimeState.currentPath, [1]);
+    assert.equal(second.runtimeState.completion, "complete");
+    const lastKnownGoodState = structuredClone(second.runtimeState);
+
+    failNextTeachingRequest = true;
+    const failedResponse = await postChat("continue", lastKnownGoodState);
+    assert.equal(failedResponse.status, 502);
+    const failed = await failedResponse.json() as {
+      code: string;
+      error: string;
+      runtimeState?: unknown;
+      diagnostic?: Record<string, unknown>;
+    };
+    assert.equal(failed.code, "TOPIC_CHAT_SERVER_ERROR");
+    assert.match(failed.error, /runtime learning state was preserved/i);
+    assert.equal(failed.runtimeState, undefined);
+    assert.deepEqual(lastKnownGoodState, second.runtimeState);
+    assert.equal(lastKnownGoodState.sequenceFinished, false);
+    assert.deepEqual(lastKnownGoodState.currentPath, [1]);
+    assert.equal(failed.diagnostic?.providerStatus, 503);
+    assert.equal(failed.diagnostic?.providerErrorCategory, "server_error");
+    assert.equal(failed.diagnostic?.compactRetryAttempted, false);
+    assert.equal(failed.diagnostic?.errorCode, "TOPIC_CHAT_SERVER_ERROR");
+    assert.equal(failed.diagnostic?.runtimeItemId, "ddl");
+    assert.deepEqual(failed.diagnostic?.runtimeItemPath, [2]);
+    assert.equal(failed.diagnostic?.requestNumber !== undefined, true);
+    assert.equal(typeof failed.diagnostic?.totalPromptCharacters, "number");
+    assert.equal(typeof failed.diagnostic?.historyCharacters, "number");
+    assert.equal(failedResponse.headers.get("X-Topic-Chat-Request-ID"), failed.diagnostic?.requestId);
+    assert.doesNotMatch(failed.error, /NEXT SUBTOPIC/i);
+
+    const retryResponse = await postChat("continue", lastKnownGoodState);
+    assert.equal(retryResponse.status, 200);
+    const retry = await retryResponse.json() as {
+      reply: string;
+      runtimeState: typeof first.runtimeState;
+    };
+    assert.deepEqual(retry.runtimeState.currentPath, [2]);
+    assert.equal(retry.runtimeState.sequence[2]?.title, "DDL");
+    assert.equal(retry.runtimeState.sequenceFinished, false);
+    assert.deepEqual(
+      [
+        retry.runtimeState.categoryId,
+        retry.runtimeState.topicId,
+        retry.runtimeState.subtopicId,
+      ],
+      [canonicalPath.categoryId, canonicalPath.topicId, canonicalPath.subtopicId],
+    );
+    assert.doesNotMatch(retry.reply, /NEXT SUBTOPIC/i);
+    assert.match(providerRequests.at(-1)?.messages[0]?.content ?? "", /Current runtime teaching item: DDL/);
+    assert.deepEqual(providerRequests[3]?.messages[0], providerRequests[4]?.messages[0]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousEnvironment.nodeEnv === undefined) Reflect.deleteProperty(process.env, "NODE_ENV");
+    else process.env.NODE_ENV = previousEnvironment.nodeEnv;
+    if (previousEnvironment.supabaseUrl === undefined) delete process.env.SUPABASE_URL;
+    else process.env.SUPABASE_URL = previousEnvironment.supabaseUrl;
+    if (previousEnvironment.supabaseKey === undefined) delete process.env.SUPABASE_PUBLISHABLE_KEY;
+    else process.env.SUPABASE_PUBLISHABLE_KEY = previousEnvironment.supabaseKey;
+    if (previousEnvironment.groqKey === undefined) delete process.env.GROQ_API_KEY;
+    else process.env.GROQ_API_KEY = previousEnvironment.groqKey;
+  }
+});
+
+test("Topic Chat persists a dynamic sequence and teaches only the explicitly selected runtime item", async () => {
+  const originalFetch = globalThis.fetch;
+  const previousEnvironment = {
+    supabaseUrl: process.env.SUPABASE_URL,
+    supabaseKey: process.env.SUPABASE_PUBLISHABLE_KEY,
+    groqKey: process.env.GROQ_API_KEY,
+  };
+  const providerRequests: { messages: { role: string; content: string }[] }[] = [];
+  let truncateNextRuntimeReply = false;
+  process.env.SUPABASE_URL = "https://supabase.test";
+  process.env.SUPABASE_PUBLISHABLE_KEY = "test-publishable-key";
+  process.env.GROQ_API_KEY = "test-groq-key";
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url.startsWith(baseUrl)) {
+      return originalFetch(input, init);
+    }
+    if (url.endsWith("/auth/v1/user")) {
+      return new Response(JSON.stringify({ id: "test-user" }), { status: 200 });
+    }
+    if (url === "https://api.groq.com/openai/v1/chat/completions") {
+      const body = JSON.parse(String(init?.body)) as {
+        messages: { role: string; content: string }[];
+      };
+      providerRequests.push(body);
+      const systemPrompt = body.messages[0]?.content ?? "";
+      const content = systemPrompt.includes("Generate navigation metadata only")
+        ? JSON.stringify({
+            sequence: [
+              {
+                title: "What SQL Is & Why It Matters",
+                items: [
+                  { title: "What SQL Stands For" },
+                  { title: "Declarative vs. Procedural" },
+                ],
+              },
+              { title: "Relational-Database Basics" },
+              { title: "Data Types & Constraints" },
+            ],
+          })
+        : JSON.stringify({
+            reply: "SQL stands for Structured Query Language: a structured way to ask a database questions.",
+            itemComplete: body.messages.at(-1)?.content !== "hi",
+          });
+      const finishReason = truncateNextRuntimeReply ? "length" : "stop";
+      truncateNextRuntimeReply = false;
+      return new Response(JSON.stringify({
+        choices: [{ message: { content }, finish_reason: finishReason }],
+        usage: { completion_tokens: 55 },
+      }), { status: 200 });
+    }
+    throw new Error(`Unexpected outbound request: ${url}`);
+  };
+
+  try {
+    const headers = {
+      Authorization: "Bearer test-token",
+      "Content-Type": "application/json",
+    };
+    const path = {
+      categoryId: "sql-database-fundamentals",
+      topicId: "what-is-sql",
+      subtopicId: "introduction-to-sql",
+    };
+    const postChat = (payload: Record<string, unknown>) =>
+      fetch(`${baseUrl}/api/learning-chat`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ ...path, ...payload }),
+      });
+
+    const planResponse = await postChat({
+      history: [],
+      question: "Give me a logical learning sequence for Introduction to SQL.",
+    });
+    assert.equal(planResponse.status, 200);
+    const plan = await planResponse.json() as {
+      reply: string;
+      intent: string;
+      runtimeState: {
+        categoryId: string;
+        topicId: string;
+        subtopicId: string;
+        sequence: { id: string; title: string; items?: { id: string; title: string }[] }[];
+        currentPath: number[] | null;
+        completion: string;
+        responseIncomplete: boolean;
+        latestIntent: string;
+      };
+    };
+    assert.equal(plan.intent, "sequence-generation");
+    assert.equal(plan.runtimeState.currentPath, null);
+    assert.equal(plan.runtimeState.completion, "not-started");
+    assert.equal(plan.runtimeState.sequence[0].items?.[0].title, "What SQL Stands For");
+    assert.match(plan.reply, /Relational-Database Basics/);
+    assert.equal(plan.reply.includes("Learning Block 1"), false);
+    const storedRuntimeState = plan.runtimeState;
+
+    const groupResponse = await postChat({
+      history: [],
+      question: "ok lets move on to 1st part",
+      runtimeState: storedRuntimeState,
+    });
+    assert.equal(groupResponse.status, 200);
+    const group = await groupResponse.json() as {
+      runtimeState: typeof storedRuntimeState & { currentPath: number[]; completion: string };
+    };
+    assert.deepEqual(group.runtimeState.currentPath, [0]);
+    assert.equal(group.runtimeState.completion, "not-started");
+
+    const nestedResponse = await postChat({
+      history: [],
+      question: "i mean only this - 1️⃣ What SQL Stands For",
+      runtimeState: group.runtimeState,
+    });
+    assert.equal(nestedResponse.status, 200);
+    const nested = await nestedResponse.json() as {
+      reply: string;
+      intent: string;
+      runtimeState: typeof storedRuntimeState & {
+        currentPath: number[];
+        completion: string;
+        responseIncomplete: boolean;
+      };
+    };
+    assert.equal(nested.intent, "explicit-runtime-item-selection");
+    assert.deepEqual(nested.runtimeState.currentPath, [0, 0]);
+    assert.equal(nested.runtimeState.completion, "complete");
+    assert.equal(nested.runtimeState.responseIncomplete, false);
+    assert.equal(
+      getRuntimeSequenceItem(nested.runtimeState.sequence, nested.runtimeState.currentPath)?.id,
+      "what-sql-stands-for",
+    );
+    assert.deepEqual(
+      getNextRuntimeItemPath(nested.runtimeState.sequence, nested.runtimeState.currentPath),
+      [0, 1],
+    );
+    const nestedPrompt = providerRequests.at(-1)?.messages[0].content ?? "";
+    assert.match(nestedPrompt, /Current runtime item ID: what-sql-stands-for/);
+    assert.match(nestedPrompt, /Current runtime item path: \[0,0\]/);
+    assert.match(nestedPrompt, /Current runtime teaching item: What SQL Stands For/);
+    assert.match(nestedPrompt, /Do not teach sibling items/);
+    assert.match(nestedPrompt, /Canonical curriculum IDs: category_id=sql-database-fundamentals, topic_id=what-is-sql, subtopic_id=introduction-to-sql/);
+    assert.doesNotMatch(nestedPrompt, /Current runtime teaching item: Declarative vs\. Procedural/);
+    assert.doesNotMatch(nestedPrompt, /Current runtime teaching item: Introduction to SQL/);
+
+    const nextResponse = await postChat({
+      history: [],
+      question: "Continue.",
+      lessonAction: { type: "continue-runtime-item" },
+      runtimeState: nested.runtimeState,
+    });
+    assert.equal(nextResponse.status, 200);
+    const next = await nextResponse.json() as {
+      runtimeState: typeof nested.runtimeState;
+    };
+    assert.deepEqual(next.runtimeState.currentPath, [0, 1]);
+    assert.equal(next.runtimeState.completion, "complete");
+    assert.match(providerRequests.at(-1)?.messages[0].content ?? "", /Current runtime teaching item: Declarative vs\. Procedural/);
+    assert.equal(next.runtimeState.categoryId, path.categoryId);
+    assert.equal(next.runtimeState.topicId, path.topicId);
+    assert.equal(next.runtimeState.subtopicId, path.subtopicId);
+
+    const greetingResponse = await postChat({
+      history: [],
+      question: "hi",
+      runtimeState: next.runtimeState,
+    });
+    assert.equal(greetingResponse.status, 200);
+    const greeting = await greetingResponse.json() as {
+      intent: string;
+      runtimeState: typeof next.runtimeState;
+    };
+    assert.equal(greeting.intent, "ordinary-topic-question");
+    assert.deepEqual(greeting.runtimeState.currentPath, [0, 1]);
+    assert.equal(greeting.runtimeState.sequence.length, 3);
+    assert.equal(greeting.runtimeState.completion, "complete");
+    assert.equal(greeting.runtimeState.latestIntent, "ordinary-topic-question");
+
+    const incompleteState = {
+      ...next.runtimeState,
+      currentPath: [1],
+      completion: "incomplete",
+      responseIncomplete: true,
+    };
+    truncateNextRuntimeReply = true;
+    const interruptedResponse = await postChat({
+      history: [],
+      question: "Continue.",
+      lessonAction: { type: "continue-runtime-item" },
+      runtimeState: incompleteState,
+    });
+    assert.equal(interruptedResponse.status, 200);
+    const interrupted = await interruptedResponse.json() as {
+      runtimeState: typeof incompleteState;
+      incomplete: boolean;
+    };
+    assert.deepEqual(interrupted.runtimeState.currentPath, [1]);
+    assert.equal(interrupted.incomplete, true);
+    assert.equal(interrupted.runtimeState.completion, "incomplete");
+    assert.equal(interrupted.runtimeState.responseIncomplete, true);
+    const finishSameItemResponse = await postChat({
+      history: [],
+      question: "Continue.",
+      lessonAction: { type: "continue-runtime-item" },
+      runtimeState: interrupted.runtimeState,
+    });
+    assert.equal(finishSameItemResponse.status, 200);
+    const finishedSameItem = await finishSameItemResponse.json() as {
+      runtimeState: typeof incompleteState;
+    };
+    assert.deepEqual(finishedSameItem.runtimeState.currentPath, [1]);
+    assert.equal(finishedSameItem.runtimeState.completion, "complete");
+    assert.match(providerRequests.at(-1)?.messages[0].content ?? "", /Current runtime teaching item: Relational-Database Basics/);
+
+    const invalidRuntimeState = await postChat({
+      history: [],
+      question: "hi",
+      runtimeState: { ...storedRuntimeState, categoryId: "wrong-category" },
+    });
+    assert.equal(invalidRuntimeState.status, 400);
+    assert.deepEqual(await invalidRuntimeState.json(), {
+      code: "INVALID_RUNTIME_STATE",
+      error: "Runtime learning state is malformed or belongs to a different canonical curriculum path.",
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousEnvironment.supabaseUrl === undefined) delete process.env.SUPABASE_URL;
+    else process.env.SUPABASE_URL = previousEnvironment.supabaseUrl;
+    if (previousEnvironment.supabaseKey === undefined) delete process.env.SUPABASE_PUBLISHABLE_KEY;
+    else process.env.SUPABASE_PUBLISHABLE_KEY = previousEnvironment.supabaseKey;
+    if (previousEnvironment.groqKey === undefined) delete process.env.GROQ_API_KEY;
+    else process.env.GROQ_API_KEY = previousEnvironment.groqKey;
+  }
+});
+
+test("Topic Chat continues a long multi-turn runtime session and retries context limits once with compact context", async () => {
+  const originalFetch = globalThis.fetch;
+  const previousEnvironment = {
+    supabaseUrl: process.env.SUPABASE_URL,
+    supabaseKey: process.env.SUPABASE_PUBLISHABLE_KEY,
+    groqKey: process.env.GROQ_API_KEY,
+  };
+  const providerRequests: { messages: { role: string; content: string }[] }[] = [];
+  const itemReplyCounts = new Map<string, number>();
+  let rejectNextWithContextLimit = false;
+  process.env.SUPABASE_URL = "https://supabase.test";
+  process.env.SUPABASE_PUBLISHABLE_KEY = "test-publishable-key";
+  process.env.GROQ_API_KEY = "test-groq-key";
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url.startsWith(baseUrl)) {
+      return originalFetch(input, init);
+    }
+    if (url.endsWith("/auth/v1/user")) {
+      return new Response(JSON.stringify({ id: "test-user" }), { status: 200 });
+    }
+    if (url === "https://api.groq.com/openai/v1/chat/completions") {
+      const body = JSON.parse(String(init?.body)) as {
+        messages: { role: string; content: string }[];
+      };
+      providerRequests.push(body);
+      if (rejectNextWithContextLimit) {
+        rejectNextWithContextLimit = false;
+        return new Response(JSON.stringify({
+          error: {
+            type: "invalid_request_error",
+            code: "context_length_exceeded",
+            message: "maximum context length exceeded",
+          },
+        }), { status: 400 });
+      }
+      const systemPrompt = body.messages[0]?.content ?? "";
+      const content = systemPrompt.includes("Generate navigation metadata only")
+        ? JSON.stringify({
+            sequence: [
+              {
+                title: "What SQL Is & Why It Matters",
+                items: [
+                  { title: "What SQL Stands For" },
+                  { title: "Declarative vs Procedural" },
+                ],
+              },
+              { title: "Core Relational Concepts" },
+              { title: "Data Types & Constraints" },
+              { title: "Creating Database Objects" },
+              { title: "Inserting Data" },
+            ],
+          })
+        : (() => {
+            const itemId = /Current runtime item ID: ([^\r\n]+)/.exec(systemPrompt)?.[1] ?? "unknown";
+            const itemCount = (itemReplyCounts.get(itemId) ?? 0) + 1;
+            itemReplyCounts.set(itemId, itemCount);
+            const itemComplete = itemId !== "declarative-vs-procedural" || itemCount > 1;
+            return JSON.stringify({
+              reply: `Focused teaching response. ${"Useful SQL explanation and examples. ".repeat(120)}`,
+              itemComplete,
+            });
+          })();
+      return new Response(JSON.stringify({
+        choices: [{ message: { content }, finish_reason: "stop" }],
+        usage: { completion_tokens: 300 },
+      }), { status: 200 });
+    }
+    throw new Error(`Unexpected outbound request: ${url}`);
+  };
+
+  try {
+    const canonicalPath = {
+      categoryId: "sql-database-fundamentals",
+      topicId: "what-is-sql",
+      subtopicId: "introduction-to-sql",
+    };
+    const postChat = (question: string, runtimeState?: unknown, history: unknown[] = []) =>
+      fetch(`${baseUrl}/api/learning-chat`, {
+        method: "POST",
+        headers: {
+          Authorization: ["Bearer", "test-token"].join(" "),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ ...canonicalPath, question, history, runtimeState }),
+      });
+    const largeHistory = Array.from({ length: 20 }, (_, index) => ({
+      role: index % 2 === 0 ? "assistant" : "user",
+      content: `${index % 2 === 0 ? "Long SQL explanation and table. " : "Continue from this example. "}`.repeat(350),
+    }));
+    assert.ok(largeHistory.reduce((sum, message) => sum + message.content.length, 0) > 200_000);
+
+    const planResponse = await postChat("Give me a logical learning sequence for Introduction to SQL.");
+    assert.equal(planResponse.status, 200);
+    const plan = await planResponse.json() as { runtimeState: Record<string, unknown> };
+    const originalSequence = plan.runtimeState.sequence;
+
+    const firstItemResponse = await postChat(
+      "i mean only this - 1️⃣ What SQL Stands For",
+      plan.runtimeState,
+    );
+    assert.equal(firstItemResponse.status, 200);
+    const firstItem = await firstItemResponse.json() as { runtimeState: Record<string, unknown> };
+    assert.deepEqual(firstItem.runtimeState.currentPath, [0, 0]);
+
+    const secondItemResponse = await postChat("continue", firstItem.runtimeState);
+    assert.equal(secondItemResponse.status, 200);
+    const secondItem = await secondItemResponse.json() as {
+      runtimeState: Record<string, unknown> & { currentPath: number[]; completion: string };
+    };
+    assert.deepEqual(secondItem.runtimeState.currentPath, [0, 1]);
+    assert.equal(secondItem.runtimeState.completion, "not-started");
+    assert.match(providerRequests[2]?.messages[0]?.content ?? "", /Teach the newly selected current runtime item from the beginning/);
+
+    const continuedSecondResponse = await postChat("continue", secondItem.runtimeState);
+    assert.equal(continuedSecondResponse.status, 200);
+    const continuedSecond = await continuedSecondResponse.json() as {
+      runtimeState: Record<string, unknown> & { currentPath: number[]; completion: string };
+    };
+    assert.deepEqual(continuedSecond.runtimeState.currentPath, [0, 1]);
+    assert.equal(continuedSecond.runtimeState.completion, "complete");
+    assert.match(providerRequests[3]?.messages[0]?.content ?? "", /Continue the current runtime item from the recent relevant context/);
+
+    const coreConceptsResponse = await postChat("continue", continuedSecond.runtimeState);
+    assert.equal(coreConceptsResponse.status, 200);
+    const coreConcepts = await coreConceptsResponse.json() as {
+      runtimeState: Record<string, unknown> & { currentPath: number[]; completion: string };
+    };
+    assert.deepEqual(coreConcepts.runtimeState.currentPath, [1]);
+    assert.equal(
+      getRuntimeSequenceItem(
+        coreConcepts.runtimeState.sequence as { id: string; title: string; items?: never[] }[],
+        coreConcepts.runtimeState.currentPath,
+      )?.title,
+      "Core Relational Concepts",
+    );
+    assert.equal(coreConcepts.runtimeState.completion, "complete");
+    assert.match(providerRequests[4]?.messages[0]?.content ?? "", /Teach the newly selected current runtime item from the beginning/);
+
+    rejectNextWithContextLimit = true;
+    const nextItemResponse = await postChat("continue", coreConcepts.runtimeState, largeHistory);
+    assert.equal(nextItemResponse.status, 200);
+    const nextItem = await nextItemResponse.json() as {
+      runtimeState: Record<string, unknown> & { currentPath: number[]; completion: string };
+      intent: string;
+    };
+    assert.equal(nextItem.intent, "continue-runtime-item");
+    assert.deepEqual(nextItem.runtimeState.currentPath, [2]);
+    assert.equal(nextItem.runtimeState.completion, "complete");
+    assert.deepEqual(nextItem.runtimeState.sequence, originalSequence);
+    assert.deepEqual(
+      [
+        nextItem.runtimeState.categoryId,
+        nextItem.runtimeState.topicId,
+        nextItem.runtimeState.subtopicId,
+      ],
+      [canonicalPath.categoryId, canonicalPath.topicId, canonicalPath.subtopicId],
+    );
+
+    const retryRequests = providerRequests.slice(-2);
+    assert.equal(retryRequests.length, 2);
+    assert.match(retryRequests[0]?.messages[0]?.content ?? "", /Current runtime item ID: data-types-constraints/);
+    assert.match(retryRequests[0]?.messages[0]?.content ?? "", /Current runtime item path: \[2\]/);
+    const firstAttemptHistory = retryRequests[0]?.messages.slice(1, -1) ?? [];
+    assert.ok(firstAttemptHistory.reduce((sum, message) => sum + message.content.length, 0) <= 6_000);
+    assert.deepEqual(retryRequests[1]?.messages.slice(1, -1), []);
+    assert.match(retryRequests[1]?.messages[0]?.content ?? "", /Current runtime item ID: data-types-constraints/);
+    assert.match(retryRequests[1]?.messages[0]?.content ?? "", /Current runtime item path: \[2\]/);
+    assert.ok((retryRequests[1]?.messages[0]?.content.length ?? 0) <
+      (retryRequests[0]?.messages[0]?.content.length ?? 0));
+    assert.equal(providerRequests.length, 7);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousEnvironment.supabaseUrl === undefined) delete process.env.SUPABASE_URL;
+    else process.env.SUPABASE_URL = previousEnvironment.supabaseUrl;
+    if (previousEnvironment.supabaseKey === undefined) delete process.env.SUPABASE_PUBLISHABLE_KEY;
+    else process.env.SUPABASE_PUBLISHABLE_KEY = previousEnvironment.supabaseKey;
+    if (previousEnvironment.groqKey === undefined) delete process.env.GROQ_API_KEY;
+    else process.env.GROQ_API_KEY = previousEnvironment.groqKey;
+  }
+});
+
+test("typed Continue stays in the same nested runtime sequence across long multi-turn progress", async () => {
+  const originalFetch = globalThis.fetch;
+  const previousEnvironment = {
+    supabaseUrl: process.env.SUPABASE_URL,
+    supabaseKey: process.env.SUPABASE_PUBLISHABLE_KEY,
+    groqKey: process.env.GROQ_API_KEY,
+  };
+  const providerRequests: { messages: { role: string; content: string }[] }[] = [];
+  const itemReplyCounts = new Map<string, number>();
+  const runtimeSequence = [
+    { title: "What SQL Stands For" },
+    { title: "Declarative vs Procedural" },
+    { title: "DDL" },
+    { title: "DML" },
+    {
+      title: "Basic Retrieval",
+      items: [
+        { title: "SELECT" },
+        { title: "WHERE" },
+        { title: "ORDER BY" },
+        { title: "GROUP BY" },
+        { title: "JOIN" },
+      ],
+    },
+  ];
+  const requireAnExtraTurn = new Set(["dml", "where", "join"]);
+  process.env.SUPABASE_URL = "https://supabase.test";
+  process.env.SUPABASE_PUBLISHABLE_KEY = "test-publishable-key";
+  process.env.GROQ_API_KEY = "test-groq-key";
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url.startsWith(baseUrl)) {
+      return originalFetch(input, init);
+    }
+    if (url.endsWith("/auth/v1/user")) {
+      return new Response(JSON.stringify({ id: "test-user" }), { status: 200 });
+    }
+    if (url === "https://api.groq.com/openai/v1/chat/completions") {
+      const body = JSON.parse(String(init?.body)) as {
+        messages: { role: string; content: string }[];
+      };
+      providerRequests.push(body);
+      const systemPrompt = body.messages[0]?.content ?? "";
+      const content = systemPrompt.includes("Generate navigation metadata only")
+        ? JSON.stringify({ sequence: runtimeSequence })
+        : (() => {
+            const itemId = /Current runtime item ID: ([^\r\n]+)/.exec(systemPrompt)?.[1] ?? "unknown";
+            const replyCount = (itemReplyCounts.get(itemId) ?? 0) + 1;
+            itemReplyCounts.set(itemId, replyCount);
+            return JSON.stringify({
+              reply: "Focused teaching for this runtime item with a concise SQL example.",
+              itemComplete: !requireAnExtraTurn.has(itemId) || replyCount > 1,
+            });
+          })();
+      return new Response(JSON.stringify({
+        choices: [{ message: { content }, finish_reason: "stop" }],
+        usage: { completion_tokens: 80 },
+      }), { status: 200 });
+    }
+    throw new Error(`Unexpected outbound request: ${url}`);
+  };
+
+  try {
+    const canonicalPath = {
+      categoryId: "sql-database-fundamentals",
+      topicId: "what-is-sql",
+      subtopicId: "introduction-to-sql",
+    };
+    const headers = {
+      Authorization: "Bearer test-token",
+      "Content-Type": "application/json",
+    };
+    const postChat = (question: string, state?: unknown, history: unknown[] = []) =>
+      fetch(`${baseUrl}/api/learning-chat`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ ...canonicalPath, question, runtimeState: state, history }),
+      });
+    const largeHistory = Array.from({ length: 20 }, (_, index) => ({
+      role: index % 2 === 0 ? "assistant" : "user",
+      content: `${index % 2 === 0 ? "SQL example and explanation. " : "Please continue. "}`
+        .repeat(700)
+        .slice(0, index % 2 === 0 ? 11_500 : 9_500),
+    }));
+    assert.ok(largeHistory.reduce((total, message) => total + message.content.length, 0) > 200_000);
+
+    const planResponse = await postChat(
+      "Give me a logical learning sequence for Introduction to SQL.",
+    );
+    assert.equal(planResponse.status, 200);
+    const plan = await planResponse.json() as {
+      intent: string;
+      runtimeState: {
+        categoryId: string;
+        topicId: string;
+        subtopicId: string;
+        sequence: { id: string; title: string; items?: { id: string; title: string }[] }[];
+        currentPath: number[] | null;
+        completion: string;
+        sequenceFinished?: boolean;
+      };
+    };
+    assert.equal(plan.intent, "sequence-generation");
+    assert.equal(plan.runtimeState.currentPath, null);
+    assert.equal(plan.runtimeState.completion, "not-started");
+    assert.equal(plan.runtimeState.sequenceFinished, false);
+    const storedSequence = plan.runtimeState.sequence;
+    const expectedPaths = [
+      [0], [1], [2], [3], [4, 0], [4, 1], [4, 2], [4, 3], [4, 4],
+    ];
+    const expectedTitles = [
+      "What SQL Stands For",
+      "Declarative vs Procedural",
+      "DDL",
+      "DML",
+      "SELECT",
+      "WHERE",
+      "ORDER BY",
+      "GROUP BY",
+      "JOIN",
+    ];
+
+    let teachingResponse = await postChat(
+      "1 What SQL Stands For",
+      plan.runtimeState,
+      largeHistory,
+    );
+    assert.equal(teachingResponse.status, 200);
+    let teaching = await teachingResponse.json() as {
+      reply: string;
+      intent: string;
+      runtimeState: typeof plan.runtimeState & {
+        currentPath: number[];
+        completion: string;
+        responseIncomplete: boolean;
+        sequenceFinished?: boolean;
+      };
+    };
+    let continuationTurnCount = 0;
+    for (let index = 0; index < expectedPaths.length; index += 1) {
+      if (index > 0) {
+        let settled = false;
+        let attempts = 0;
+        while (!settled) {
+          teachingResponse = await postChat("continue", teaching.runtimeState, largeHistory);
+          continuationTurnCount += 1;
+          assert.equal(teachingResponse.status, 200, `continue ${index}, attempt ${attempts + 1}`);
+          teaching = await teachingResponse.json() as typeof teaching;
+          attempts += 1;
+          assert.ok(attempts <= 3, `item ${expectedTitles[index]} should complete within three turns`);
+          assert.deepEqual(
+            teaching.runtimeState.currentPath,
+            expectedPaths[index],
+            `runtime path after continue ${index}, attempt ${attempts}`,
+          );
+          settled = teaching.runtimeState.completion === "complete";
+          assert.deepEqual(teaching.runtimeState.sequence, storedSequence);
+          assert.deepEqual(
+            [
+              teaching.runtimeState.categoryId,
+              teaching.runtimeState.topicId,
+              teaching.runtimeState.subtopicId,
+            ],
+            [canonicalPath.categoryId, canonicalPath.topicId, canonicalPath.subtopicId],
+          );
+        }
+      }
+      const expectedPath = expectedPaths[index]!;
+      const expectedTitle = expectedTitles[index]!;
+      const currentItem = getRuntimeSequenceItem(
+        teaching.runtimeState.sequence,
+        teaching.runtimeState.currentPath,
+      );
+      assert.equal(teaching.intent, index === 0
+        ? "explicit-runtime-item-selection"
+        : "continue-runtime-item");
+      assert.deepEqual(teaching.runtimeState.currentPath, expectedPath, `path at item ${index + 1}`);
+      assert.equal(currentItem?.title, expectedTitle, `item at path ${expectedPath.join(".")}`);
+      assert.equal(teaching.runtimeState.completion, "complete");
+      assert.equal(teaching.runtimeState.responseIncomplete, false);
+      assert.equal(teaching.runtimeState.sequenceFinished, false);
+      assert.deepEqual(teaching.runtimeState.sequence, storedSequence);
+      assert.deepEqual(
+        [
+          teaching.runtimeState.categoryId,
+          teaching.runtimeState.topicId,
+          teaching.runtimeState.subtopicId,
+        ],
+        [canonicalPath.categoryId, canonicalPath.topicId, canonicalPath.subtopicId],
+      );
+      assert.doesNotMatch(teaching.reply, /NEXT SUBTOPIC/i);
+      assert.match(
+        providerRequests.at(-1)?.messages[0]?.content ?? "",
+        new RegExp(`Current runtime teaching item: ${expectedTitle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
+      );
+      const requestHistory = providerRequests.at(-1)?.messages.slice(1, -1) ?? [];
+      assert.ok(requestHistory.reduce((total, message) => total + message.content.length, 0) <= 6_000);
+    }
+    assert.ok(continuationTurnCount >= 10, `expected at least 10 turns, got ${continuationTurnCount}`);
+
+    const providerCallsBeforeFinish = providerRequests.length;
+    const finishResponse = await postChat("continue", teaching.runtimeState, largeHistory);
+    assert.equal(finishResponse.status, 200);
+    const finished = await finishResponse.json() as {
+      reply: string;
+      runtimeState: typeof teaching.runtimeState;
+    };
+    assert.match(finished.reply, /Finished this part/);
+    assert.deepEqual(finished.runtimeState.sequence, storedSequence);
+    assert.deepEqual(finished.runtimeState.currentPath, [4, 4]);
+    assert.equal(finished.runtimeState.sequenceFinished, true);
+    assert.deepEqual(
+      [
+        finished.runtimeState.categoryId,
+        finished.runtimeState.topicId,
+        finished.runtimeState.subtopicId,
+      ],
+      [canonicalPath.categoryId, canonicalPath.topicId, canonicalPath.subtopicId],
+    );
+    assert.equal(providerRequests.length, providerCallsBeforeFinish);
+
+    const repeatedFinishResponse = await postChat("continue", finished.runtimeState, largeHistory);
+    assert.equal(repeatedFinishResponse.status, 200);
+    const repeatedFinish = await repeatedFinishResponse.json() as typeof finished;
+    assert.equal(repeatedFinish.runtimeState.sequenceFinished, true);
+    assert.equal(providerRequests.length, providerCallsBeforeFinish);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousEnvironment.supabaseUrl === undefined) delete process.env.SUPABASE_URL;
+    else process.env.SUPABASE_URL = previousEnvironment.supabaseUrl;
+    if (previousEnvironment.supabaseKey === undefined) delete process.env.SUPABASE_PUBLISHABLE_KEY;
+    else process.env.SUPABASE_PUBLISHABLE_KEY = previousEnvironment.supabaseKey;
+    if (previousEnvironment.groqKey === undefined) delete process.env.GROQ_API_KEY;
+    else process.env.GROQ_API_KEY = previousEnvironment.groqKey;
+  }
+});
+
+test("Topic Chat does not retry authentication, rate-limit, or non-context request failures", async () => {
+  const originalFetch = globalThis.fetch;
+  const previousEnvironment = {
+    supabaseUrl: process.env.SUPABASE_URL,
+    supabaseKey: process.env.SUPABASE_PUBLISHABLE_KEY,
+    groqKey: process.env.GROQ_API_KEY,
+  };
+  const providerStatuses = [
+    {
+      status: 401,
+      body: { error: { type: "authentication_error", code: "invalid_api_key", message: "Invalid API key." } },
+      code: "TOPIC_CHAT_AUTHENTICATION_ERROR",
+    },
+    {
+      status: 429,
+      body: { error: { type: "rate_limit_error", code: "rate_limit_exceeded", message: "Too many requests." } },
+      code: "TOPIC_CHAT_RATE_LIMIT",
+    },
+    {
+      status: 400,
+      body: { error: { type: "invalid_request_error", code: "invalid_response_format", message: "Invalid response format." } },
+      code: "TOPIC_CHAT_BAD_REQUEST",
+    },
+    {
+      status: 503,
+      body: { error: { type: "server_error", code: "provider_overloaded", message: "Provider overloaded." } },
+      code: "TOPIC_CHAT_SERVER_ERROR",
+    },
+  ];
+  process.env.SUPABASE_URL = "https://supabase.test";
+  process.env.SUPABASE_PUBLISHABLE_KEY = "test-publishable-key";
+  process.env.GROQ_API_KEY = "test-groq-key";
+  let providerCalls = 0;
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url.startsWith(baseUrl)) {
+      return originalFetch(input, init);
+    }
+    if (url.endsWith("/auth/v1/user")) {
+      return new Response(JSON.stringify({ id: "test-user" }), { status: 200 });
+    }
+    if (url === "https://api.groq.com/openai/v1/chat/completions") {
+      const scenario = providerStatuses[providerCalls++];
+      if (!scenario) {
+        return new Response(JSON.stringify({ choices: [] }), { status: 200 });
+      }
+      return new Response(JSON.stringify(scenario.body), { status: scenario.status });
+    }
+    throw new Error(`Unexpected outbound request: ${url}`);
+  };
+
+  try {
+    const runtimeState = {
+      categoryId: "sql-database-fundamentals",
+      topicId: "what-is-sql",
+      subtopicId: "introduction-to-sql",
+      sequence: [
+        { id: "first", title: "First item" },
+        { id: "second", title: "Second item" },
+        { id: "third", title: "Third item" },
+      ],
+      currentPath: [0],
+      completion: "complete",
+      responseIncomplete: false,
+      latestIntent: "explicit-runtime-item-selection",
+    };
+    for (const scenario of providerStatuses) {
+      const response = await fetch(`${baseUrl}/api/learning-chat`, {
+        method: "POST",
+        headers: {
+          Authorization: ["Bearer", "test-token"].join(" "),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          categoryId: runtimeState.categoryId,
+          topicId: runtimeState.topicId,
+          subtopicId: runtimeState.subtopicId,
+          question: "continue",
+          runtimeState,
+          history: [],
+        }),
+      });
+      assert.equal(response.status, 502);
+      const result = await response.json() as { code: string };
+      assert.equal(result.code, scenario.code);
+    }
+    const malformedResponse = await fetch(`${baseUrl}/api/learning-chat`, {
+      method: "POST",
+      headers: {
+        Authorization: ["Bearer", "test-token"].join(" "),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        categoryId: runtimeState.categoryId,
+        topicId: runtimeState.topicId,
+        subtopicId: runtimeState.subtopicId,
+        question: "continue",
+        runtimeState,
+        history: [],
+      }),
+    });
+    assert.equal(malformedResponse.status, 502);
+    assert.equal(
+      (await malformedResponse.json() as { code: string }).code,
+      "TOPIC_CHAT_PROVIDER_INVALID_RESPONSE",
+    );
+    assert.equal(providerCalls, providerStatuses.length + 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousEnvironment.supabaseUrl === undefined) delete process.env.SUPABASE_URL;
+    else process.env.SUPABASE_URL = previousEnvironment.supabaseUrl;
+    if (previousEnvironment.supabaseKey === undefined) delete process.env.SUPABASE_PUBLISHABLE_KEY;
+    else process.env.SUPABASE_PUBLISHABLE_KEY = previousEnvironment.supabaseKey;
+    if (previousEnvironment.groqKey === undefined) delete process.env.GROQ_API_KEY;
+    else process.env.GROQ_API_KEY = previousEnvironment.groqKey;
   }
 });
 
