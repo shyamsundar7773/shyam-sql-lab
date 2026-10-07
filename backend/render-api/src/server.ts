@@ -31,12 +31,21 @@ import {
   isLikelyDuplicate,
   normalizeNoteDraft,
 } from "./notes-service.js";
+import {
+  classifyGeminiProviderFailure,
+  classifyGeminiTransportFailure,
+  parseGeminiCompletion,
+  resolveGeminiModel,
+  sendGeminiChatCompletion,
+  type GeminiChatRequest,
+} from "./gemini-provider.js";
 
 dotenv.config();
 
 export const app = express();
 const port = process.env.PORT || 3000;
 const maximumOfficialContentLength = 25_000;
+const maximumProviderWaitMs = 60_000;
 const maximumHistoryItems = 20;
 const maximumChatQuestionLength = 4_000;
 const maximumLearningChatHistoryMessageLength = 12_000;
@@ -48,7 +57,6 @@ const maximumOrganizerTextLength = 100_000;
 const organizerCompletionTokenLimit = 3_000;
 const organizerRequestTokenBudget = 7_000;
 const organizerRequestOverheadTokens = 256;
-const maximumProviderWaitMs = 60_000;
 let topicChatDiagnosticRequestNumber = 0;
 const authoritativeNotesTaxonomy: NotesTaxonomyLocation[] = sqlLearningCategories.flatMap(
   (category) =>
@@ -424,8 +432,8 @@ app.post("/api/learning-chat", async (request, response) => {
     return;
   }
 
-  const groqApiKey = process.env.GROQ_API_KEY?.trim();
-  if (!groqApiKey) {
+  const geminiApiKey = process.env.GEMINI_API_KEY?.trim();
+  if (!geminiApiKey) {
     response.status(503).json({ error: "AI replies are not configured yet." });
     return;
   }
@@ -436,7 +444,7 @@ app.post("/api/learning-chat", async (request, response) => {
   let compactContextRetried = false;
   let compactRetryResult: "not-attempted" | "pending" | "succeeded" | "failed" = "not-attempted";
   try {
-    const model = process.env.GROQ_MODEL?.trim() || "openai/gpt-oss-120b";
+    const model = resolveGeminiModel(process.env.GEMINI_MODEL);
     if (input.runtimeFinal) {
       response.json({
         reply: "🎉 Finished this part.",
@@ -501,13 +509,12 @@ app.post("/api/learning-chat", async (request, response) => {
     }
     let providerMessages = buildTopicChatProviderMessages(input, runtimePrompt);
     providerRequestStats = getTopicChatRequestStats(providerMessages);
-    let providerBody = {
-      model,
+    let providerBody: GeminiChatRequest = {
       messages: providerMessages,
-      max_completion_tokens: topicChatCompletionTokenLimit,
+      maxOutputTokens: topicChatCompletionTokenLimit,
       temperature: 0.4,
       ...(input.usesRuntimeState || input.intent === "sequence-generation"
-        ? { response_format: { type: "json_object" as const } }
+        ? { responseMimeType: "application/json" as const }
         : {}),
     };
     const initialRequestBreakdown = getTopicChatRequestBreakdown(input, providerMessages, providerBody);
@@ -528,42 +535,36 @@ app.post("/api/learning-chat", async (request, response) => {
       model,
       maxCompletionTokens: topicChatCompletionTokenLimit,
       temperature: 0.4,
-      responseFormat: providerBody.response_format?.type ?? "default",
+      responseFormat: providerBody.responseMimeType ?? "default",
     });
     logTopicChatDiagnostic("provider_request_started", {
       ...getTopicChatDiagnosticContext(diagnosticRequestNumber, diagnosticRequestId, input),
-      provider: "groq",
+      provider: "gemini",
       ...initialRequestBreakdown,
     });
-    let aiResponse = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${groqApiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(providerBody),
-      signal: AbortSignal.timeout(30_000),
-    });
+    let aiResponse = await sendGeminiChatCompletion(geminiApiKey, model, providerBody);
     providerStatus = aiResponse.status;
     logTopicChatDiagnostic("provider_http_response", {
       ...getTopicChatDiagnosticContext(diagnosticRequestNumber, diagnosticRequestId, input),
-      provider: "groq",
+      provider: "gemini",
       providerStatus: aiResponse.status,
       providerOk: aiResponse.ok,
     });
 
     if (!aiResponse.ok) {
       const providerError: unknown = await aiResponse.json().catch(() => null);
-      const failureCategory = classifyTopicChatProviderFailure(aiResponse.status, providerError);
+      const failureCategory = classifyGeminiProviderFailure(aiResponse.status, providerError);
       providerErrorCategory = failureCategory;
       const requestStats = getTopicChatRequestStats(providerMessages);
+      const providerErrorDetails = getTopicChatProviderErrorDetails(providerError);
       logTopicChatDiagnostic("provider_http_error", {
         ...getTopicChatDiagnosticContext(diagnosticRequestNumber, diagnosticRequestId, input),
-        provider: "groq",
+        provider: "gemini",
         providerStatus: aiResponse.status,
         providerErrorCategory: failureCategory,
-        providerErrorType: getTopicChatProviderErrorDetails(providerError)?.type ?? null,
-        providerErrorCode: getTopicChatProviderErrorDetails(providerError)?.code ?? null,
+        providerErrorType: providerErrorDetails?.type ?? null,
+        providerErrorCode: providerErrorDetails?.code ?? null,
+        providerErrorMessage: providerErrorDetails?.message ?? null,
         providerErrorBodyParsed: providerError !== null,
         ...requestStats,
       });
@@ -599,16 +600,16 @@ app.post("/api/learning-chat", async (request, response) => {
         const compactRequestBreakdown = getTopicChatRequestBreakdown(input, providerMessages, providerBody);
         logTopicChatDiagnostic("compact_retry_started", {
           ...getTopicChatDiagnosticContext(diagnosticRequestNumber, diagnosticRequestId, input),
-          provider: "groq",
+          provider: "gemini",
           initialProviderStatus: aiResponse.status,
           initialProviderErrorCategory: failureCategory,
           ...compactRequestBreakdown,
         });
-        aiResponse = await sendCompactTopicChatRequest(groqApiKey, providerBody);
+        aiResponse = await sendGeminiChatCompletion(geminiApiKey, model, providerBody);
         providerStatus = aiResponse.status;
         if (!aiResponse.ok) {
           const compactError: unknown = await aiResponse.json().catch(() => null);
-          const compactFailure = classifyTopicChatProviderFailure(aiResponse.status, compactError);
+          const compactFailure = classifyGeminiProviderFailure(aiResponse.status, compactError);
           providerErrorCategory = compactFailure;
           compactRetryResult = "failed";
           console.warn("[Topic Chat compact provider retry]", {
@@ -624,7 +625,7 @@ app.post("/api/learning-chat", async (request, response) => {
             ...getTopicChatDiagnosticContext(diagnosticRequestNumber, diagnosticRequestId, input),
             httpStatus: 502,
             errorCode: code,
-            provider: "groq",
+            provider: "gemini",
             providerStatus: aiResponse.status,
             providerErrorCategory: compactFailure,
             compactRetryAttempted: true,
@@ -667,7 +668,7 @@ app.post("/api/learning-chat", async (request, response) => {
           ...getTopicChatDiagnosticContext(diagnosticRequestNumber, diagnosticRequestId, input),
           httpStatus: 502,
           errorCode: code,
-          provider: "groq",
+          provider: "gemini",
           providerStatus: aiResponse.status,
           providerErrorCategory: failureCategory,
           compactRetryAttempted: false,
@@ -696,10 +697,10 @@ app.post("/api/learning-chat", async (request, response) => {
     }
 
     const providerCompletion: unknown = await aiResponse.json().catch(() => null);
-    const completion = getTopicChatCompletion(providerCompletion);
+    const completion = parseGeminiCompletion(providerCompletion);
     logTopicChatDiagnostic("provider_json_parsed", {
       ...getTopicChatDiagnosticContext(diagnosticRequestNumber, diagnosticRequestId, input),
-      provider: "groq",
+      provider: "gemini",
       providerStatus: aiResponse.status,
       providerJsonValid: completion !== null,
       finishReason: completion?.finishReason ?? null,
@@ -721,7 +722,7 @@ app.post("/api/learning-chat", async (request, response) => {
         ...getTopicChatDiagnosticContext(diagnosticRequestNumber, diagnosticRequestId, input),
         httpStatus: 502,
         errorCode: code,
-        provider: "groq",
+        provider: "gemini",
         providerStatus: aiResponse.status,
         providerErrorCategory: "invalid_response",
         compactRetryAttempted: compactContextRetried,
@@ -955,12 +956,7 @@ app.post("/api/learning-chat", async (request, response) => {
       compactRetryResult,
     });
   } catch (error) {
-    const failureCategory = error instanceof Error &&
-        (error.name === "TimeoutError" || error.name === "AbortError")
-      ? "provider_timeout"
-      : error instanceof TypeError
-        ? "provider_unreachable"
-        : "request_failed";
+    const failureCategory = classifyGeminiTransportFailure(error);
     console.error("[Topic Chat provider request failed]", {
       errorName: error instanceof Error ? error.name : "UnknownError",
       errorCode: isRecord(error) && typeof error.code === "string"
@@ -981,16 +977,16 @@ app.post("/api/learning-chat", async (request, response) => {
       failureCategory,
       completion: input.runtimeState.completion,
     });
-    const code = failureCategory === "provider_timeout"
+    const code = failureCategory === "timeout"
         ? "TOPIC_CHAT_PROVIDER_TIMEOUT"
-        : failureCategory === "provider_unreachable"
+        : failureCategory === "network_error"
           ? "TOPIC_CHAT_PROVIDER_UNREACHABLE"
           : "TOPIC_CHAT_PROVIDER_REQUEST_FAILED";
     logTopicChatDiagnostic("request_failed", {
       ...getTopicChatDiagnosticContext(diagnosticRequestNumber, diagnosticRequestId, input),
       httpStatus: 502,
       errorCode: code,
-      provider: "groq",
+      provider: "gemini",
       providerStatus,
       providerErrorCategory: failureCategory,
       compactRetryAttempted: compactContextRetried,
@@ -1029,8 +1025,8 @@ app.post("/api/notes/organize", async (request, response) => {
     });
     return;
   }
-  const groqApiKey = process.env.GROQ_API_KEY?.trim();
-  if (!groqApiKey) {
+  const geminiApiKey = process.env.GEMINI_API_KEY?.trim();
+  if (!geminiApiKey) {
     response.status(503).json({
       code: "AI_NOT_CONFIGURED",
       error: "AI note organization is not configured yet.",
@@ -1050,15 +1046,12 @@ app.post("/api/notes/organize", async (request, response) => {
     }
 
     const organizedItems: OrganizedNote[] = [];
-    let lastRateLimitHeaders: GroqRateLimitHeaders | null = null;
     for (const [batchIndex, batch] of batches.entries()) {
-      await waitForOrganizerTokenWindow(lastRateLimitHeaders, batch.estimatedTokens);
-      const completion = await requestGroqOrganizerCompletion(
-        groqApiKey,
+      const completion = await requestGeminiOrganizerCompletion(
+        geminiApiKey,
         batch.messages,
         organizerCompletionTokenLimit,
       );
-      lastRateLimitHeaders = completion.rateLimitHeaders;
       const payload = parseJsonObject(completion.text);
       const batchItems = normalizeOrganizedNotes(payload?.items, batch.chunks, taxonomy);
       if (!batchItems) {
@@ -1090,15 +1083,15 @@ app.post("/api/notes/organize", async (request, response) => {
       itemsNeedChanges: organizedItems.length - mapped.length,
     });
   } catch (error) {
-    const groqFailure = error instanceof GroqRequestError ? error : null;
-    const providerCategory = groqFailure?.category ??
+    const geminiFailure = error instanceof GeminiRequestError ? error : null;
+    const providerCategory = geminiFailure?.category ??
       (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")
         ? "provider_timeout"
         : error instanceof TypeError
           ? "provider_unreachable"
           : null);
-    const code = groqFailure
-      ? groqFailure.category === "provider_rejected"
+    const code = geminiFailure
+      ? geminiFailure.category === "provider_rejected"
         ? "AI_PROVIDER_REJECTED"
         : "AI_PROVIDER_EMPTY_RESPONSE"
       : providerCategory === "provider_timeout"
@@ -1109,13 +1102,13 @@ app.post("/api/notes/organize", async (request, response) => {
     console.error("[notes-organizer]", JSON.stringify({
       category: providerCategory ?? "organizer_processing",
       code,
-      ...(groqFailure?.status === undefined ? {} : { upstreamStatus: groqFailure.status }),
-      ...(groqFailure?.providerType ? { providerType: groqFailure.providerType } : {}),
-      ...(groqFailure?.providerMessage ? { providerMessage: groqFailure.providerMessage } : {}),
-      ...(groqFailure?.rateLimitHeaders ? { rateLimit: groqFailure.rateLimitHeaders } : {}),
-      ...(groqFailure?.retryAfterMs === undefined ? {} : { retryAfterMs: groqFailure.retryAfterMs }),
-      ...(groqFailure?.retryable === undefined ? {} : { retryable: groqFailure.retryable }),
-      ...(!groqFailure ? { errorType: error instanceof Error ? error.name : typeof error } : {}),
+      ...(geminiFailure?.status === undefined ? {} : { upstreamStatus: geminiFailure.status }),
+      ...(geminiFailure?.providerType ? { providerType: geminiFailure.providerType } : {}),
+      ...(geminiFailure?.providerMessage ? { providerMessage: geminiFailure.providerMessage } : {}),
+      ...(geminiFailure?.rateLimitHeaders ? { rateLimit: geminiFailure.rateLimitHeaders } : {}),
+      ...(geminiFailure?.retryAfterMs === undefined ? {} : { retryAfterMs: geminiFailure.retryAfterMs }),
+      ...(geminiFailure?.retryable === undefined ? {} : { retryable: geminiFailure.retryable }),
+      ...(!geminiFailure ? { errorType: error instanceof Error ? error.name : typeof error } : {}),
     }));
     response.status(502).json({
       code,
@@ -1137,14 +1130,14 @@ app.post("/api/practice/generate", async (request, response) => {
     return;
   }
 
-  const groqApiKey = process.env.GROQ_API_KEY?.trim();
-  if (!groqApiKey) {
+  const geminiApiKey = process.env.GEMINI_API_KEY?.trim();
+  if (!geminiApiKey) {
     response.status(503).json({ error: "AI practice generation is not configured yet." });
     return;
   }
 
   try {
-    const completion = await requestGroqCompletion(groqApiKey, [
+    const completion = await requestGeminiCompletion(geminiApiKey, [
       {
         role: "system",
         content: [
@@ -1213,14 +1206,14 @@ app.post("/api/practice/evaluate", async (request, response) => {
     return;
   }
 
-  const groqApiKey = process.env.GROQ_API_KEY?.trim();
-  if (!groqApiKey) {
+  const geminiApiKey = process.env.GEMINI_API_KEY?.trim();
+  if (!geminiApiKey) {
     response.status(503).json({ error: "AI practice evaluation is not configured yet." });
     return;
   }
 
   try {
-    const reply = await requestGroqCompletion(groqApiKey, [
+    const reply = await requestGeminiCompletion(geminiApiKey, [
       {
         role: "system",
         content: [
@@ -1457,10 +1450,8 @@ function isPracticeEvaluationExecution(
   return true;
 }
 
-type GroqRateLimitHeaders = {
+type GeminiRateLimitHeaders = {
   retryAfter: string | null;
-  remainingTokens: string | null;
-  resetTokens: string | null;
 };
 
 type OrganizerBatch = {
@@ -1560,38 +1551,6 @@ function estimateArbitraryTextTokens(serializedContent: string) {
     }
   }
   return estimatedTokens;
-}
-
-async function waitForOrganizerTokenWindow(
-  headers: GroqRateLimitHeaders | null,
-  nextEstimatedTokens: number,
-) {
-  if (!headers?.resetTokens) {
-    return;
-  }
-  const remainingTokens = headers.remainingTokens === null
-    ? Number.NaN
-    : Number(headers.remainingTokens);
-  const resetWaitMs = parseProviderWaitMs(headers.resetTokens);
-  if (
-    (Number.isFinite(remainingTokens) && remainingTokens >= nextEstimatedTokens) ||
-    resetWaitMs === null ||
-    resetWaitMs <= 0
-  ) {
-    return;
-  }
-  if (resetWaitMs > maximumProviderWaitMs) {
-    throw new GroqRequestError(
-      "provider_rejected",
-      429,
-      "rate_limit_exceeded",
-      "Token rate limit window exceeds the maximum wait.",
-      headers,
-      resetWaitMs,
-      false,
-    );
-  }
-  await delay(resetWaitMs);
 }
 
 function parseProviderWaitMs(value: string): number | null {
@@ -1963,13 +1922,13 @@ async function getVerifiedUserId(
   }
 }
 
-class GroqRequestError extends Error {
+class GeminiRequestError extends Error {
   constructor(
     readonly category: "provider_rejected" | "provider_empty_response",
     readonly status: number,
     readonly providerType?: string,
     readonly providerMessage?: string,
-    readonly rateLimitHeaders?: GroqRateLimitHeaders,
+    readonly rateLimitHeaders?: GeminiRateLimitHeaders,
     readonly retryAfterMs?: number,
     readonly retryable?: boolean,
   ) {
@@ -1977,70 +1936,60 @@ class GroqRequestError extends Error {
   }
 }
 
-async function requestGroqCompletion(
+async function requestGeminiCompletion(
   apiKey: string,
   messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
   maxCompletionTokens: number,
 ) {
-  const aiResponse = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: process.env.GROQ_MODEL?.trim() || "openai/gpt-oss-120b",
+  const aiResponse = await sendGeminiChatCompletion(
+    apiKey,
+    resolveGeminiModel(process.env.GEMINI_MODEL),
+    {
       messages,
-      max_completion_tokens: maxCompletionTokens,
+      maxOutputTokens: maxCompletionTokens,
       temperature: 0.4,
       ...(messages[0]?.content.includes("Return only a JSON object")
-        ? { response_format: { type: "json_object" } }
+        ? { responseMimeType: "application/json" as const }
         : {}),
-    }),
-    signal: AbortSignal.timeout(45_000),
-  });
+    },
+  );
   if (!aiResponse.ok) {
-    throw new GroqRequestError("provider_rejected", aiResponse.status);
+    const providerError: unknown = await aiResponse.json().catch(() => null);
+    const category = classifyGeminiProviderFailure(aiResponse.status, providerError);
+    throw new GeminiRequestError("provider_rejected", aiResponse.status, category, category);
   }
   const completion: unknown = await aiResponse.json().catch(() => null);
-  const text = getCompletionText(completion);
-  if (!text) {
-    throw new GroqRequestError("provider_empty_response", aiResponse.status);
+  const parsed = parseGeminiCompletion(completion);
+  if (!parsed) {
+    throw new GeminiRequestError("provider_empty_response", aiResponse.status);
   }
-  return text;
+  return parsed.reply;
 }
 
-async function requestGroqOrganizerCompletion(
+async function requestGeminiOrganizerCompletion(
   apiKey: string,
   messages: Array<{ role: "system" | "user"; content: string }>,
   maxCompletionTokens: number,
 ) {
   let retryAttempted = false;
   while (true) {
-    const aiResponse = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: process.env.GROQ_MODEL?.trim() || "openai/gpt-oss-120b",
+    const aiResponse = await sendGeminiChatCompletion(
+      apiKey,
+      resolveGeminiModel(process.env.GEMINI_MODEL),
+      {
         messages,
-        max_completion_tokens: maxCompletionTokens,
+        maxOutputTokens: maxCompletionTokens,
         temperature: 0.4,
-        response_format: { type: "json_object" },
-      }),
-      signal: AbortSignal.timeout(45_000),
-    });
-    const rateLimitHeaders = readGroqRateLimitHeaders(aiResponse.headers);
+        responseMimeType: "application/json",
+      },
+    );
+    const rateLimitHeaders = readGeminiRateLimitHeaders(aiResponse.headers);
     if (!aiResponse.ok) {
       const providerError: unknown = await aiResponse.json().catch(() => null);
-      const details = getGroqProviderErrorDetails(providerError);
-      const retryable = aiResponse.status === 429 &&
-        isTransientGroqRateLimit(details, rateLimitHeaders);
-      const retryAfterMs = parseProviderWaitMs(rateLimitHeaders.retryAfter ?? "") ??
-        parseProviderWaitMs(rateLimitHeaders.resetTokens ?? "") ??
-        1_000;
+      const category = classifyGeminiProviderFailure(aiResponse.status, providerError);
+      const retryable = aiResponse.status === 429 && category === "rate_limit" &&
+        rateLimitHeaders.retryAfter !== null;
+      const retryAfterMs = parseProviderWaitMs(rateLimitHeaders.retryAfter ?? "") ?? 1_000;
       if (retryable && !retryAttempted) {
         retryAttempted = true;
         if (retryAfterMs <= maximumProviderWaitMs) {
@@ -2048,8 +1997,8 @@ async function requestGroqOrganizerCompletion(
             category: "provider_rate_limited",
             code: "AI_PROVIDER_REJECTED",
             upstreamStatus: aiResponse.status,
-            providerType: details.type,
-            providerMessage: details.message,
+            providerType: category,
+            providerMessage: category,
             rateLimit: rateLimitHeaders,
             retryAfterMs,
             retrying: true,
@@ -2058,96 +2007,38 @@ async function requestGroqOrganizerCompletion(
           continue;
         }
       }
-      throw new GroqRequestError(
+      throw new GeminiRequestError(
         "provider_rejected",
         aiResponse.status,
-        details.type,
-        details.message,
+        category,
+        category,
         rateLimitHeaders,
         retryAfterMs,
         retryable,
       );
     }
     const completion: unknown = await aiResponse.json().catch(() => null);
-    const text = getCompletionText(completion);
-    if (!text) {
-      throw new GroqRequestError("provider_empty_response", aiResponse.status);
+    const parsed = parseGeminiCompletion(completion);
+    if (!parsed) {
+      throw new GeminiRequestError("provider_empty_response", aiResponse.status);
     }
-    return { text, rateLimitHeaders };
+    return { text: parsed.reply, rateLimitHeaders };
   }
 }
 
-function readGroqRateLimitHeaders(headers: Headers): GroqRateLimitHeaders {
-  return {
-    retryAfter: sanitizeGroqDurationHeader(headers.get("retry-after")),
-    remainingTokens: sanitizeGroqCountHeader(headers.get("x-ratelimit-remaining-tokens")),
-    resetTokens: sanitizeGroqDurationHeader(headers.get("x-ratelimit-reset-tokens")),
-  };
+function readGeminiRateLimitHeaders(headers: Headers): GeminiRateLimitHeaders {
+  return { retryAfter: sanitizeGeminiDurationHeader(headers.get("retry-after")) };
 }
 
-function sanitizeGroqCountHeader(value: string | null) {
-  return value && /^\d{1,10}$/.test(value) ? value : null;
-}
-
-function sanitizeGroqDurationHeader(value: string | null) {
+function sanitizeGeminiDurationHeader(value: string | null) {
   if (!value || value.length > 64) {
     return null;
   }
-  if (/^\d+(?:\.\d+)?$/.test(value) || /^\d+(?:\.\d+)?(?:ms|s|m|h)(?:\d+(?:\.\d+)?(?:ms|s|m|h))*$/i.test(value)) {
+  if (/^\d+(?:\.\d+)?$/.test(value)) {
     return value;
   }
   const date = Date.parse(value);
-  return Number.isNaN(date) ? null : `${Math.max(0, date - Date.now())}ms`;
-}
-
-function getGroqProviderErrorDetails(
-  value: unknown,
-): { type?: string; message?: string } {
-  if (!isRecord(value) || !isRecord(value.error)) {
-    return {};
-  }
-  const providerError = value.error;
-  const providerDetails = [providerError.code, providerError.type, providerError.message]
-    .filter((item): item is string => typeof item === "string")
-    .join(" ")
-    .toLowerCase();
-  const hasQuotaError =
-    /quota|billing|insufficient|payment|credit|subscription|daily|per day|resource exhausted/.test(providerDetails);
-  const hasRateLimitError = /rate.?limit|too many requests|throttl/.test(providerDetails);
-  const hasUnavailableError = /unavailable|overloaded|capacity|temporarily down/.test(providerDetails);
-  const type = hasQuotaError
-    ? "quota_exceeded"
-    : hasRateLimitError
-      ? "rate_limit"
-      : hasUnavailableError
-        ? "provider_unavailable"
-        : "provider_rejected";
-  const message = hasQuotaError
-    ? "quota_exceeded"
-    : hasRateLimitError
-      ? "rate_limit"
-      : hasUnavailableError
-        ? "provider_unavailable"
-        : "provider_rejected";
-  return {
-    type,
-    message,
-  };
-}
-
-function isTransientGroqRateLimit(
-  details: { type?: string; message?: string },
-  headers: GroqRateLimitHeaders,
-) {
-  const providerDetails = `${details.type ?? ""} ${details.message ?? ""}`.toLowerCase();
-  if (
-    /quota|billing|insufficient|payment|credit|subscription|resource exhausted|daily|per day|account.{0,20}(?:limit|disabled|suspended)/
-      .test(providerDetails)
-  ) {
-    return false;
-  }
-  return /rate.?limit|too many requests|throttl/.test(providerDetails) ||
-    headers.retryAfter !== null;
+  return Number.isNaN(date) ? null : String(Math.max(0, date - Date.now())) + "ms";
 }
 
 function parseJsonObject(value: string): Record<string, unknown> | null {
@@ -2176,7 +2067,9 @@ function getTopicChatProviderErrorDetails(value: unknown): {
   const error = value.error;
   return {
     ...(typeof error.type === "string" ? { type: sanitizeProviderIdentifier(error.type) } : {}),
-    ...(typeof error.code === "string" ? { code: sanitizeProviderIdentifier(error.code) } : {}),
+    ...(typeof error.code === "string" || typeof error.code === "number"
+      ? { code: sanitizeProviderIdentifier(String(error.code)) }
+      : {}),
     ...(typeof error.message === "string"
       ? { message: redactProviderErrorMessage(error.message).slice(0, 300) }
       : {}),
@@ -2190,6 +2083,7 @@ function sanitizeProviderIdentifier(value: string): string {
 function redactProviderErrorMessage(message: string): string {
   return message
     .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, "Bearer [redacted]")
+    .replace(/\bAIza[0-9A-Za-z_-]{30,}\b/g, "[redacted]")
     .replace(/\b(api[_-]?key|token|secret)\s*[:=]\s*[^\s,;]+/gi, "$1=[redacted]");
 }
 
@@ -2309,7 +2203,7 @@ function getTopicChatRequestStats(messages: TopicChatProviderMessage[]) {
 function getTopicChatRequestBreakdown(
   input: ChatRequest,
   messages: TopicChatProviderMessage[],
-  providerBody: Record<string, unknown>,
+  providerBody: GeminiChatRequest,
 ) {
   const systemPrompt = messages[0]?.content ?? "";
   const userPrompt = messages.at(-1)?.content ?? "";
@@ -2377,7 +2271,7 @@ function createTopicChatFailureDiagnostic(
 ) {
   return {
     ...getTopicChatDiagnosticContext(requestNumber, requestId, input),
-    provider: "groq",
+    provider: "gemini",
     providerStatus,
     providerErrorCategory,
     compactRetryAttempted,
@@ -2400,48 +2294,6 @@ function safeJsonCharacterCount(value: unknown): number | null {
   } catch {
     return null;
   }
-}
-
-async function sendCompactTopicChatRequest(
-  apiKey: string,
-  body: Record<string, unknown>,
-) {
-  return fetch("https://api.groq.com/openai/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(30_000),
-  });
-}
-
-function classifyTopicChatProviderFailure(
-  status: number,
-  value: unknown,
-): "authentication_error" | "rate_limit" | "context_limit" | "bad_request" | "server_error" | "provider_error" {
-  const details = getTopicChatProviderErrorDetails(value);
-  const providerText = `${details?.type ?? ""} ${details?.code ?? ""} ${details?.message ?? ""}`.toLowerCase();
-  if (status === 401 || status === 403 || /invalid[_ ]api[_ ]key|authentication/.test(providerText)) {
-    return "authentication_error";
-  }
-  if (status === 429 || /rate.?limit|too many requests|throttl/.test(providerText)) {
-    return "rate_limit";
-  }
-  if (
-    status === 413 ||
-    /context[_ ]length|context window|maximum context|token limit|too many tokens|request too large|payload too large|reduce.{0,30}(messages|prompt|tokens)|prompt.{0,30}too long/.test(providerText)
-  ) {
-    return "context_limit";
-  }
-  if (status >= 500) {
-    return "server_error";
-  }
-  if (status === 400) {
-    return "bad_request";
-  }
-  return "provider_error";
 }
 
 function buildCompactRuntimeGrounding(officialContent: string, compact: boolean): string {
@@ -2944,49 +2796,6 @@ function isNonEmptyString(value: unknown, maximumLength: number): value is strin
 
 function isTopicChatContinuationRequest(question: string) {
   return /^\s*(?:please\s+)?(?:continue|keep going|finish|complete)\b/i.test(question);
-}
-
-function getTopicChatCompletion(value: unknown): {
-  reply: string;
-  incomplete: boolean;
-  finishReason: string | null;
-  completionTokens: number | null;
-} | null {
-  if (!isRecord(value) || !Array.isArray(value.choices)) {
-    return null;
-  }
-  const firstChoice: unknown = value.choices[0];
-  if (!isRecord(firstChoice) || !isRecord(firstChoice.message)) {
-    return null;
-  }
-  const content = firstChoice.message.content;
-  if (typeof content !== "string" || !content.trim()) {
-    return null;
-  }
-  const usage = isRecord(value.usage) ? value.usage : null;
-  return {
-    reply: content,
-    incomplete: firstChoice.finish_reason === "length",
-    finishReason:
-      typeof firstChoice.finish_reason === "string" ? firstChoice.finish_reason : null,
-    completionTokens:
-      usage && typeof usage.completion_tokens === "number" &&
-      Number.isFinite(usage.completion_tokens)
-        ? usage.completion_tokens
-        : null,
-  };
-}
-
-function getCompletionText(value: unknown): string | null {
-  if (!isRecord(value) || !Array.isArray(value.choices)) {
-    return null;
-  }
-  const firstChoice: unknown = value.choices[0];
-  if (!isRecord(firstChoice) || !isRecord(firstChoice.message)) {
-    return null;
-  }
-  const content = firstChoice.message.content;
-  return typeof content === "string" && content.trim() ? content.trim() : null;
 }
 
 if (process.env.NODE_ENV !== "test") {

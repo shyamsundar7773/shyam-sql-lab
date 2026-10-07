@@ -36,6 +36,55 @@ after(async () => {
   });
 });
 
+function parseGeminiMockRequest(url: string, body: BodyInit | null | undefined) {
+  const request = JSON.parse(String(body)) as {
+    systemInstruction?: { parts?: { text?: string }[] };
+    contents?: { role?: string; parts?: { text?: string }[] }[];
+    generationConfig?: {
+      maxOutputTokens?: number;
+      responseMimeType?: string;
+    };
+  };
+  const model = /\/models\/([^:]+):generateContent/.exec(url)?.[1] ?? "";
+  const systemText = request.systemInstruction?.parts
+    ?.map((part) => part.text ?? "")
+    .join("\n") ?? "";
+  return {
+    model: decodeURIComponent(model),
+    max_tokens: request.generationConfig?.maxOutputTokens,
+    max_completion_tokens: request.generationConfig?.maxOutputTokens,
+    response_format: request.generationConfig?.responseMimeType === "application/json"
+      ? { type: "json_object" }
+      : undefined,
+    messages: [
+      ...(systemText ? [{ role: "system", content: systemText }] : []),
+      ...(request.contents ?? []).map((item) => ({
+        role: item.role === "model" ? "assistant" : item.role ?? "user",
+        content: item.parts?.map((part) => part.text ?? "").join("\n") ?? "",
+      })),
+    ],
+  };
+}
+
+function geminiMockCompletion(
+  text: string,
+  finishReason = "STOP",
+  completionTokens = 32,
+) {
+  const normalizedFinishReason = finishReason === "stop"
+    ? "STOP"
+    : finishReason === "length"
+      ? "MAX_TOKENS"
+      : finishReason;
+  return JSON.stringify({
+    candidates: [{
+      content: { parts: [{ text }] },
+      finishReason: normalizedFinishReason,
+    }],
+    usageMetadata: { candidatesTokenCount: completionTokens },
+  });
+}
+
 test("health check responds successfully to GET and POST", async () => {
   for (const method of ["GET", "POST"]) {
     const response = await fetch(`${baseUrl}/api/health`, { method });
@@ -141,18 +190,18 @@ test("Topic Chat accepts a normal subtopic-grounded follow-up without practice q
   const previousEnvironment = {
     supabaseUrl: process.env.SUPABASE_URL,
     supabaseKey: process.env.SUPABASE_PUBLISHABLE_KEY,
-    groqKey: process.env.GROQ_API_KEY,
-    groqModel: process.env.GROQ_MODEL,
+    geminiKey: process.env.GEMINI_API_KEY,
+    geminiModel: process.env.GEMINI_MODEL,
   };
-  const groqRequests: Array<{
+  const geminiRequests: Array<{
     model: string;
-    max_completion_tokens: number;
+    max_tokens: number;
     messages: Array<{ role: string; content: string }>;
   }> = [];
   process.env.SUPABASE_URL = "https://supabase.test";
   process.env.SUPABASE_PUBLISHABLE_KEY = "test-publishable-key";
-  process.env.GROQ_API_KEY = "test-groq-key";
-  process.env.GROQ_MODEL = "openai/gpt-oss-120b";
+  process.env.GEMINI_API_KEY = "test-gemini-key";
+  process.env.GEMINI_MODEL = "gemini-3.5-flash-lite";
   globalThis.fetch = async (input, init) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     if (url.startsWith(baseUrl)) {
@@ -161,24 +210,20 @@ test("Topic Chat accepts a normal subtopic-grounded follow-up without practice q
     if (url.endsWith("/auth/v1/user")) {
       return new Response(JSON.stringify({ id: "test-user" }), { status: 200 });
     }
-    if (url === "https://api.groq.com/openai/v1/chat/completions") {
-      groqRequests.push(
-        JSON.parse(String(init?.body)) as {
+    if (url === "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent") {
+      geminiRequests.push(
+        parseGeminiMockRequest(url, init?.body) as {
           model: string;
-          max_completion_tokens: number;
+          max_tokens: number;
           messages: Array<{ role: string; content: string }>;
         },
       );
       return new Response(
-        JSON.stringify({
-          choices: [{
-            message: {
-              content: "A SELECT statement chooses which columns appear in a query result.\n\nFor example, `SELECT employee_name FROM employees;` returns only the employee_name column. Use a comma-separated list after SELECT when you need multiple columns; the selected column order determines the output order.",
-            },
-            finish_reason: "stop",
-          }],
-          usage: { completion_tokens: 72 },
-        }),
+        geminiMockCompletion(
+          "A SELECT statement chooses which columns appear in a query result.\n\nFor example, `SELECT employee_name FROM employees;` returns only the employee_name column. Use a comma-separated list after SELECT when you need multiple columns; the selected column order determines the output order.",
+          "STOP",
+          72,
+        ),
         { status: 200 },
       );
     }
@@ -239,33 +284,33 @@ test("Topic Chat accepts a normal subtopic-grounded follow-up without practice q
         nextSectionTitle: selectingColumnSections[1].title,
       },
     });
-    assert.equal(groqRequests.length, 1);
-    assert.equal(groqRequests[0].model, "openai/gpt-oss-120b");
-    assert.equal(groqRequests[0].max_completion_tokens, 4_096);
-    assert.match(groqRequests[0].messages[0].content, /category_id=sql-foundations/);
-    assert.match(groqRequests[0].messages[0].content, /topic_id=select-statements/);
-    assert.match(groqRequests[0].messages[0].content, /subtopic_id=selecting-columns/);
+    assert.equal(geminiRequests.length, 1);
+    assert.equal(geminiRequests[0].model, "gemini-3.5-flash-lite");
+    assert.equal(geminiRequests[0].max_tokens, 4_096);
+    assert.match(geminiRequests[0].messages[0].content, /category_id=sql-foundations/);
+    assert.match(geminiRequests[0].messages[0].content, /topic_id=select-statements/);
+    assert.match(geminiRequests[0].messages[0].content, /subtopic_id=selecting-columns/);
     assert.match(
-      groqRequests[0].messages[0].content,
+      geminiRequests[0].messages[0].content,
       /CURRENT CURRICULUM UNIT:\nCategory: SQL Foundations\nTopic: SELECT Statements\nSubtopic: Selecting Columns/,
     );
-    assert.match(groqRequests[0].messages[0].content, /You are teaching ONE CURRENT RUNTIME LEARNING ITEM/);
-    assert.match(groqRequests[0].messages[0].content, /Teach the CURRENT RUNTIME LEARNING ITEM, not the whole subtopic/);
-    assert.match(groqRequests[0].messages[0].content, /Do not output a giant structured lesson, document, Part I\/II outline/);
-    assert.match(groqRequests[0].messages[0].content, /CURRENT RUNTIME LEARNING ITEM:\nItem 1 of \d+: Core Idea: Selecting Columns/);
-    assert.match(groqRequests[0].messages[0].content, /Teach only this item\. Finish it before stopping/);
-    assert.match(groqRequests[0].messages[0].content, /Do not start the next runtime item/);
-    assert.match(groqRequests[0].messages[0].content, /The runtime list is navigation metadata only/);
+    assert.match(geminiRequests[0].messages[0].content, /You are teaching ONE CURRENT RUNTIME LEARNING ITEM/);
+    assert.match(geminiRequests[0].messages[0].content, /Teach the CURRENT RUNTIME LEARNING ITEM, not the whole subtopic/);
+    assert.match(geminiRequests[0].messages[0].content, /Do not output a giant structured lesson, document, Part I\/II outline/);
+    assert.match(geminiRequests[0].messages[0].content, /CURRENT RUNTIME LEARNING ITEM:\nItem 1 of \d+: Core Idea: Selecting Columns/);
+    assert.match(geminiRequests[0].messages[0].content, /Teach only this item\. Finish it before stopping/);
+    assert.match(geminiRequests[0].messages[0].content, /Do not start the next runtime item/);
+    assert.match(geminiRequests[0].messages[0].content, /The runtime list is navigation metadata only/);
     assert.match(
-      groqRequests[0].messages[0].content,
+      geminiRequests[0].messages[0].content,
       /A SELECT statement defines which columns should appear in a SQL query result/,
     );
-    assert.match(groqRequests[0].messages[0].content, /Saved note relevant to selecting columns/);
+    assert.match(geminiRequests[0].messages[0].content, /Saved note relevant to selecting columns/);
     assert.equal(
-      groqRequests[0].messages[0].content.includes("Client lesson must not become authoritative"),
+      geminiRequests[0].messages[0].content.includes("Client lesson must not become authoritative"),
       false,
     );
-    assert.deepEqual(groqRequests[0].messages.slice(-3), [
+    assert.deepEqual(geminiRequests[0].messages.slice(-3), [
       { role: "user", content: "What is a column?" },
       { role: "assistant", content: "A column stores one kind of value in a table." },
       { role: "user", content: "Explain selecting columns." },
@@ -291,16 +336,16 @@ test("Topic Chat accepts a normal subtopic-grounded follow-up without practice q
       200,
       JSON.stringify(await newCategoryResponse.json()),
     );
-    assert.equal(groqRequests.length, 2);
-    assert.match(groqRequests[1].messages[0].content, /category_id=sql-database-fundamentals/);
-    assert.match(groqRequests[1].messages[0].content, /topic_id=what-is-sql/);
-    assert.match(groqRequests[1].messages[0].content, /subtopic_id=introduction-to-sql/);
+    assert.equal(geminiRequests.length, 2);
+    assert.match(geminiRequests[1].messages[0].content, /category_id=sql-database-fundamentals/);
+    assert.match(geminiRequests[1].messages[0].content, /topic_id=what-is-sql/);
+    assert.match(geminiRequests[1].messages[0].content, /subtopic_id=introduction-to-sql/);
     assert.match(
-      groqRequests[1].messages[0].content,
+      geminiRequests[1].messages[0].content,
       /Structured Query Language is the standardized programming language used to manage, query, and manipulate data stored in relational databases\./,
     );
-    assert.match(groqRequests[1].messages[0].content, /The current item is the content target\. The sequence list is just a learning plan for navigation\./i);
-    assert.equal(groqRequests[1].messages.at(-1)?.content, "What does SQL do?");
+    assert.match(geminiRequests[1].messages[0].content, /The current item is the content target\. The sequence list is just a learning plan for navigation\./i);
+    assert.equal(geminiRequests[1].messages.at(-1)?.content, "What does SQL do?");
 
     const separateSubtopic = await fetch(`${baseUrl}/api/learning-chat`, {
       method: "POST",
@@ -317,19 +362,19 @@ test("Topic Chat accepts a normal subtopic-grounded follow-up without practice q
       }),
     });
     assert.equal(separateSubtopic.status, 200);
-    assert.equal(groqRequests.length, 3);
-    assert.match(groqRequests[2].messages[0].content, /subtopic_id=purpose-of-sql/);
+    assert.equal(geminiRequests.length, 3);
+    assert.match(geminiRequests[2].messages[0].content, /subtopic_id=purpose-of-sql/);
     assert.match(
-      groqRequests[2].messages[0].content,
+      geminiRequests[2].messages[0].content,
       /The main purpose of SQL is to provide a unified way to retrieve, insert, update, delete, and manage database records efficiently\./,
     );
     assert.equal(
-      groqRequests[2].messages[0].content.includes(
+      geminiRequests[2].messages[0].content.includes(
         "Structured Query Language is the standardized programming language",
       ),
       false,
     );
-    assert.equal(groqRequests[2].messages.at(-1)?.content, "Why use SQL?");
+    assert.equal(geminiRequests[2].messages.at(-1)?.content, "Why use SQL?");
 
     const selectingColumnsSectionHeading =
       `## Lesson Section 1 of ${selectingColumnSections.length}: ${selectingColumnSections[0].title}\n\n`;
@@ -356,8 +401,8 @@ test("Topic Chat accepts a normal subtopic-grounded follow-up without practice q
       });
       assert.equal(followUpResponse.status, 200);
     }
-    assert.equal(groqRequests.length, 5);
-    for (const requestBody of groqRequests.slice(3)) {
+    assert.equal(geminiRequests.length, 5);
+    for (const requestBody of geminiRequests.slice(3)) {
       assert.match(requestBody.messages[0].content, /Category: SQL Foundations\nTopic: SELECT Statements\nSubtopic: Selecting Columns/);
       assert.match(requestBody.messages[0].content, /Do not teach or preview the next subtopic/);
       assert.match(requestBody.messages[0].content, /CURRENT RUNTIME LEARNING ITEM:\nItem 1 of \d+: Core Idea: Selecting Columns/);
@@ -369,10 +414,10 @@ test("Topic Chat accepts a normal subtopic-grounded follow-up without practice q
     else process.env.SUPABASE_URL = previousEnvironment.supabaseUrl;
     if (previousEnvironment.supabaseKey === undefined) delete process.env.SUPABASE_PUBLISHABLE_KEY;
     else process.env.SUPABASE_PUBLISHABLE_KEY = previousEnvironment.supabaseKey;
-    if (previousEnvironment.groqKey === undefined) delete process.env.GROQ_API_KEY;
-    else process.env.GROQ_API_KEY = previousEnvironment.groqKey;
-    if (previousEnvironment.groqModel === undefined) delete process.env.GROQ_MODEL;
-    else process.env.GROQ_MODEL = previousEnvironment.groqModel;
+    if (previousEnvironment.geminiKey === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = previousEnvironment.geminiKey;
+    if (previousEnvironment.geminiModel === undefined) delete process.env.GEMINI_MODEL;
+    else process.env.GEMINI_MODEL = previousEnvironment.geminiModel;
   }
 });
 
@@ -381,16 +426,16 @@ test("Topic Chat Continue advances sections only within the current subtopic", a
   const previousEnvironment = {
     supabaseUrl: process.env.SUPABASE_URL,
     supabaseKey: process.env.SUPABASE_PUBLISHABLE_KEY,
-    groqKey: process.env.GROQ_API_KEY,
-    groqModel: process.env.GROQ_MODEL,
+    geminiKey: process.env.GEMINI_API_KEY,
+    geminiModel: process.env.GEMINI_MODEL,
   };
   const providerRequests: {
     messages: { role: string; content: string }[];
   }[] = [];
   process.env.SUPABASE_URL = "https://supabase.test";
   process.env.SUPABASE_PUBLISHABLE_KEY = "test-publishable-key";
-  process.env.GROQ_API_KEY = "test-groq-key";
-  process.env.GROQ_MODEL = "openai/gpt-oss-120b";
+  process.env.GEMINI_API_KEY = "test-gemini-key";
+  process.env.GEMINI_MODEL = "gemini-3.5-flash-lite";
   globalThis.fetch = async (input, init) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     if (url.startsWith(baseUrl)) {
@@ -399,17 +444,13 @@ test("Topic Chat Continue advances sections only within the current subtopic", a
     if (url.endsWith("/auth/v1/user")) {
       return new Response(JSON.stringify({ id: "test-user" }), { status: 200 });
     }
-    if (url === "https://api.groq.com/openai/v1/chat/completions") {
-      providerRequests.push(JSON.parse(String(init?.body)) as {
+    if (url === "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent") {
+      providerRequests.push(parseGeminiMockRequest(url, init?.body) as {
         messages: { role: string; content: string }[];
       });
-      return new Response(JSON.stringify({
-        choices: [{
-          message: { content: "A complete explanation for this section." },
-          finish_reason: "stop",
-        }],
-        usage: { completion_tokens: 35 },
-      }), { status: 200 });
+      return new Response(geminiMockCompletion("A complete explanation for this section.", "STOP", 35), {
+        status: 200,
+      });
     }
     throw new Error(`Unexpected outbound request: ${url}`);
   };
@@ -526,10 +567,10 @@ test("Topic Chat Continue advances sections only within the current subtopic", a
     else process.env.SUPABASE_URL = previousEnvironment.supabaseUrl;
     if (previousEnvironment.supabaseKey === undefined) delete process.env.SUPABASE_PUBLISHABLE_KEY;
     else process.env.SUPABASE_PUBLISHABLE_KEY = previousEnvironment.supabaseKey;
-    if (previousEnvironment.groqKey === undefined) delete process.env.GROQ_API_KEY;
-    else process.env.GROQ_API_KEY = previousEnvironment.groqKey;
-    if (previousEnvironment.groqModel === undefined) delete process.env.GROQ_MODEL;
-    else process.env.GROQ_MODEL = previousEnvironment.groqModel;
+    if (previousEnvironment.geminiKey === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = previousEnvironment.geminiKey;
+    if (previousEnvironment.geminiModel === undefined) delete process.env.GEMINI_MODEL;
+    else process.env.GEMINI_MODEL = previousEnvironment.geminiModel;
   }
 });
 
@@ -538,8 +579,8 @@ test("Topic Chat detects output limits and continues from the saved reply", asyn
   const previousEnvironment = {
     supabaseUrl: process.env.SUPABASE_URL,
     supabaseKey: process.env.SUPABASE_PUBLISHABLE_KEY,
-    groqKey: process.env.GROQ_API_KEY,
-    groqModel: process.env.GROQ_MODEL,
+    geminiKey: process.env.GEMINI_API_KEY,
+    geminiModel: process.env.GEMINI_MODEL,
   };
   const providerReply = `Partial explanation:\n\n${"Each row represents one order. ".repeat(180)}`;
   const continuationReply = "That completes the explanation.";
@@ -548,15 +589,15 @@ test("Topic Chat detects output limits and continues from the saved reply", asyn
     { content: continuationReply, finishReason: "stop" },
     { content: continuationReply, finishReason: "stop" },
   ];
-  const groqRequests: Array<{
+  const geminiRequests: Array<{
     model: string;
-    max_completion_tokens: number;
+    max_tokens: number;
     messages: Array<{ role: string; content: string }>;
   }> = [];
   process.env.SUPABASE_URL = "https://supabase.test";
   process.env.SUPABASE_PUBLISHABLE_KEY = "test-publishable-key";
-  process.env.GROQ_API_KEY = "test-groq-key";
-  process.env.GROQ_MODEL = "openai/gpt-oss-120b";
+  process.env.GEMINI_API_KEY = "test-gemini-key";
+  process.env.GEMINI_MODEL = "gemini-3.5-flash-lite";
   globalThis.fetch = async (input, init) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     if (url.startsWith(baseUrl)) {
@@ -565,23 +606,21 @@ test("Topic Chat detects output limits and continues from the saved reply", asyn
     if (url.endsWith("/auth/v1/user")) {
       return new Response(JSON.stringify({ id: "test-user" }), { status: 200 });
     }
-    if (url === "https://api.groq.com/openai/v1/chat/completions") {
-      groqRequests.push(JSON.parse(String(init?.body)) as {
+    if (url === "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent") {
+      geminiRequests.push(parseGeminiMockRequest(url, init?.body) as {
         model: string;
-        max_completion_tokens: number;
+        max_tokens: number;
         messages: Array<{ role: string; content: string }>;
       });
       const next = providerResponses.shift();
       if (!next) {
         throw new Error("Unexpected extra Topic Chat provider request.");
       }
-      return new Response(JSON.stringify({
-        choices: [{
-          message: { content: next.content },
-          finish_reason: next.finishReason,
-        }],
-        usage: { completion_tokens: next.finishReason === "length" ? 4_096 : 8 },
-      }), { status: 200 });
+      return new Response(geminiMockCompletion(
+        next.content,
+        next.finishReason,
+        next.finishReason === "length" ? 4_096 : 8,
+      ), { status: 200 });
     }
     throw new Error(`Unexpected outbound request: ${url}`);
   };
@@ -675,14 +714,14 @@ test("Topic Chat detects output limits and continues from the saved reply", asyn
       },
     });
 
-    assert.equal(groqRequests.length, 2);
-    assert.ok(groqRequests.every((requestBody) =>
-      requestBody.model === "openai/gpt-oss-120b",
+    assert.equal(geminiRequests.length, 2);
+    assert.ok(geminiRequests.every((requestBody) =>
+      requestBody.model === "gemini-3.5-flash-lite",
     ));
-    assert.ok(groqRequests.every((requestBody) =>
-      requestBody.max_completion_tokens === 4_096,
+    assert.ok(geminiRequests.every((requestBody) =>
+      requestBody.max_tokens === 4_096,
     ));
-    const continuationMessages = groqRequests[1].messages;
+    const continuationMessages = geminiRequests[1].messages;
     assert.match(
       continuationMessages[0].content,
       /Continue the CURRENT RUNTIME ITEM from where the previous reply stopped/i,
@@ -721,17 +760,17 @@ test("Topic Chat detects output limits and continues from the saved reply", asyn
     const finishedResult = await finishResponse.json() as typeof continuedResult;
     assert.equal(finishedResult.lessonProgress.sectionIndex, 1);
     assert.equal(finishedResult.lessonProgress.sectionComplete, true);
-    assert.match(groqRequests[2].messages[0].content, /Continue the CURRENT RUNTIME ITEM/);
+    assert.match(geminiRequests[2].messages[0].content, /Continue the CURRENT RUNTIME ITEM/);
   } finally {
     globalThis.fetch = originalFetch;
     if (previousEnvironment.supabaseUrl === undefined) delete process.env.SUPABASE_URL;
     else process.env.SUPABASE_URL = previousEnvironment.supabaseUrl;
     if (previousEnvironment.supabaseKey === undefined) delete process.env.SUPABASE_PUBLISHABLE_KEY;
     else process.env.SUPABASE_PUBLISHABLE_KEY = previousEnvironment.supabaseKey;
-    if (previousEnvironment.groqKey === undefined) delete process.env.GROQ_API_KEY;
-    else process.env.GROQ_API_KEY = previousEnvironment.groqKey;
-    if (previousEnvironment.groqModel === undefined) delete process.env.GROQ_MODEL;
-    else process.env.GROQ_MODEL = previousEnvironment.groqModel;
+    if (previousEnvironment.geminiKey === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = previousEnvironment.geminiKey;
+    if (previousEnvironment.geminiModel === undefined) delete process.env.GEMINI_MODEL;
+    else process.env.GEMINI_MODEL = previousEnvironment.geminiModel;
   }
 });
 
@@ -740,11 +779,11 @@ test("Topic Chat returns structured provider errors without masking them", async
   const previousEnvironment = {
     supabaseUrl: process.env.SUPABASE_URL,
     supabaseKey: process.env.SUPABASE_PUBLISHABLE_KEY,
-    groqKey: process.env.GROQ_API_KEY,
+    geminiKey: process.env.GEMINI_API_KEY,
   };
   process.env.SUPABASE_URL = "https://supabase.test";
   process.env.SUPABASE_PUBLISHABLE_KEY = "test-publishable-key";
-  process.env.GROQ_API_KEY = "test-groq-key";
+  process.env.GEMINI_API_KEY = "test-gemini-key";
   globalThis.fetch = async (input, init) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     if (url.startsWith(baseUrl)) {
@@ -753,7 +792,7 @@ test("Topic Chat returns structured provider errors without masking them", async
     if (url.endsWith("/auth/v1/user")) {
       return new Response(JSON.stringify({ id: "test-user" }), { status: 200 });
     }
-    if (url === "https://api.groq.com/openai/v1/chat/completions") {
+    if (url === "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent") {
       return new Response(JSON.stringify({ error: { message: "Provider unavailable." } }), {
         status: 503,
       });
@@ -787,8 +826,8 @@ test("Topic Chat returns structured provider errors without masking them", async
     else process.env.SUPABASE_URL = previousEnvironment.supabaseUrl;
     if (previousEnvironment.supabaseKey === undefined) delete process.env.SUPABASE_PUBLISHABLE_KEY;
     else process.env.SUPABASE_PUBLISHABLE_KEY = previousEnvironment.supabaseKey;
-    if (previousEnvironment.groqKey === undefined) delete process.env.GROQ_API_KEY;
-    else process.env.GROQ_API_KEY = previousEnvironment.groqKey;
+    if (previousEnvironment.geminiKey === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = previousEnvironment.geminiKey;
   }
 });
 
@@ -798,14 +837,14 @@ test("Topic Chat provider failure preserves the prior state and a retry targets 
     nodeEnv: process.env.NODE_ENV,
     supabaseUrl: process.env.SUPABASE_URL,
     supabaseKey: process.env.SUPABASE_PUBLISHABLE_KEY,
-    groqKey: process.env.GROQ_API_KEY,
+    geminiKey: process.env.GEMINI_API_KEY,
   };
   const providerRequests: { messages: { role: string; content: string }[] }[] = [];
   let failNextTeachingRequest = false;
   process.env.NODE_ENV = "development";
   process.env.SUPABASE_URL = "https://supabase.test";
   process.env.SUPABASE_PUBLISHABLE_KEY = "test-publishable-key";
-  process.env.GROQ_API_KEY = "test-groq-key";
+  process.env.GEMINI_API_KEY = "test-gemini-key";
   globalThis.fetch = async (input, init) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     if (url.startsWith(baseUrl)) {
@@ -814,8 +853,8 @@ test("Topic Chat provider failure preserves the prior state and a retry targets 
     if (url.endsWith("/auth/v1/user")) {
       return new Response(JSON.stringify({ id: "test-user" }), { status: 200 });
     }
-    if (url === "https://api.groq.com/openai/v1/chat/completions") {
-      const body = JSON.parse(String(init?.body)) as {
+    if (url === "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent") {
+      const body = parseGeminiMockRequest(url, init?.body) as {
         messages: { role: string; content: string }[];
       };
       providerRequests.push(body);
@@ -844,10 +883,7 @@ test("Topic Chat provider failure preserves the prior state and a retry targets 
             reply: "Focused teaching for the current runtime item.",
             itemComplete: true,
           });
-      return new Response(JSON.stringify({
-        choices: [{ message: { content }, finish_reason: "stop" }],
-        usage: { completion_tokens: 60 },
-      }), { status: 200 });
+      return new Response(geminiMockCompletion(content, "stop", 60), { status: 200 });
     }
     throw new Error(`Unexpected outbound request: ${url}`);
   };
@@ -949,8 +985,8 @@ test("Topic Chat provider failure preserves the prior state and a retry targets 
     else process.env.SUPABASE_URL = previousEnvironment.supabaseUrl;
     if (previousEnvironment.supabaseKey === undefined) delete process.env.SUPABASE_PUBLISHABLE_KEY;
     else process.env.SUPABASE_PUBLISHABLE_KEY = previousEnvironment.supabaseKey;
-    if (previousEnvironment.groqKey === undefined) delete process.env.GROQ_API_KEY;
-    else process.env.GROQ_API_KEY = previousEnvironment.groqKey;
+    if (previousEnvironment.geminiKey === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = previousEnvironment.geminiKey;
   }
 });
 
@@ -959,13 +995,13 @@ test("Topic Chat persists a dynamic sequence and teaches only the explicitly sel
   const previousEnvironment = {
     supabaseUrl: process.env.SUPABASE_URL,
     supabaseKey: process.env.SUPABASE_PUBLISHABLE_KEY,
-    groqKey: process.env.GROQ_API_KEY,
+    geminiKey: process.env.GEMINI_API_KEY,
   };
   const providerRequests: { messages: { role: string; content: string }[] }[] = [];
   let truncateNextRuntimeReply = false;
   process.env.SUPABASE_URL = "https://supabase.test";
   process.env.SUPABASE_PUBLISHABLE_KEY = "test-publishable-key";
-  process.env.GROQ_API_KEY = "test-groq-key";
+  process.env.GEMINI_API_KEY = "test-gemini-key";
   globalThis.fetch = async (input, init) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     if (url.startsWith(baseUrl)) {
@@ -974,8 +1010,8 @@ test("Topic Chat persists a dynamic sequence and teaches only the explicitly sel
     if (url.endsWith("/auth/v1/user")) {
       return new Response(JSON.stringify({ id: "test-user" }), { status: 200 });
     }
-    if (url === "https://api.groq.com/openai/v1/chat/completions") {
-      const body = JSON.parse(String(init?.body)) as {
+    if (url === "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent") {
+      const body = parseGeminiMockRequest(url, init?.body) as {
         messages: { role: string; content: string }[];
       };
       providerRequests.push(body);
@@ -1000,10 +1036,7 @@ test("Topic Chat persists a dynamic sequence and teaches only the explicitly sel
           });
       const finishReason = truncateNextRuntimeReply ? "length" : "stop";
       truncateNextRuntimeReply = false;
-      return new Response(JSON.stringify({
-        choices: [{ message: { content }, finish_reason: finishReason }],
-        usage: { completion_tokens: 55 },
-      }), { status: 200 });
+      return new Response(geminiMockCompletion(content, finishReason, 55), { status: 200 });
     }
     throw new Error(`Unexpected outbound request: ${url}`);
   };
@@ -1185,8 +1218,8 @@ test("Topic Chat persists a dynamic sequence and teaches only the explicitly sel
     else process.env.SUPABASE_URL = previousEnvironment.supabaseUrl;
     if (previousEnvironment.supabaseKey === undefined) delete process.env.SUPABASE_PUBLISHABLE_KEY;
     else process.env.SUPABASE_PUBLISHABLE_KEY = previousEnvironment.supabaseKey;
-    if (previousEnvironment.groqKey === undefined) delete process.env.GROQ_API_KEY;
-    else process.env.GROQ_API_KEY = previousEnvironment.groqKey;
+    if (previousEnvironment.geminiKey === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = previousEnvironment.geminiKey;
   }
 });
 
@@ -1195,14 +1228,14 @@ test("Topic Chat continues a long multi-turn runtime session and retries context
   const previousEnvironment = {
     supabaseUrl: process.env.SUPABASE_URL,
     supabaseKey: process.env.SUPABASE_PUBLISHABLE_KEY,
-    groqKey: process.env.GROQ_API_KEY,
+    geminiKey: process.env.GEMINI_API_KEY,
   };
   const providerRequests: { messages: { role: string; content: string }[] }[] = [];
   const itemReplyCounts = new Map<string, number>();
   let rejectNextWithContextLimit = false;
   process.env.SUPABASE_URL = "https://supabase.test";
   process.env.SUPABASE_PUBLISHABLE_KEY = "test-publishable-key";
-  process.env.GROQ_API_KEY = "test-groq-key";
+  process.env.GEMINI_API_KEY = "test-gemini-key";
   globalThis.fetch = async (input, init) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     if (url.startsWith(baseUrl)) {
@@ -1211,8 +1244,8 @@ test("Topic Chat continues a long multi-turn runtime session and retries context
     if (url.endsWith("/auth/v1/user")) {
       return new Response(JSON.stringify({ id: "test-user" }), { status: 200 });
     }
-    if (url === "https://api.groq.com/openai/v1/chat/completions") {
-      const body = JSON.parse(String(init?.body)) as {
+    if (url === "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent") {
+      const body = parseGeminiMockRequest(url, init?.body) as {
         messages: { role: string; content: string }[];
       };
       providerRequests.push(body);
@@ -1253,10 +1286,7 @@ test("Topic Chat continues a long multi-turn runtime session and retries context
               itemComplete,
             });
           })();
-      return new Response(JSON.stringify({
-        choices: [{ message: { content }, finish_reason: "stop" }],
-        usage: { completion_tokens: 300 },
-      }), { status: 200 });
+      return new Response(geminiMockCompletion(content, "stop", 300), { status: 200 });
     }
     throw new Error(`Unexpected outbound request: ${url}`);
   };
@@ -1367,8 +1397,8 @@ test("Topic Chat continues a long multi-turn runtime session and retries context
     else process.env.SUPABASE_URL = previousEnvironment.supabaseUrl;
     if (previousEnvironment.supabaseKey === undefined) delete process.env.SUPABASE_PUBLISHABLE_KEY;
     else process.env.SUPABASE_PUBLISHABLE_KEY = previousEnvironment.supabaseKey;
-    if (previousEnvironment.groqKey === undefined) delete process.env.GROQ_API_KEY;
-    else process.env.GROQ_API_KEY = previousEnvironment.groqKey;
+    if (previousEnvironment.geminiKey === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = previousEnvironment.geminiKey;
   }
 });
 
@@ -1377,7 +1407,7 @@ test("typed Continue stays in the same nested runtime sequence across long multi
   const previousEnvironment = {
     supabaseUrl: process.env.SUPABASE_URL,
     supabaseKey: process.env.SUPABASE_PUBLISHABLE_KEY,
-    groqKey: process.env.GROQ_API_KEY,
+    geminiKey: process.env.GEMINI_API_KEY,
   };
   const providerRequests: { messages: { role: string; content: string }[] }[] = [];
   const itemReplyCounts = new Map<string, number>();
@@ -1400,7 +1430,7 @@ test("typed Continue stays in the same nested runtime sequence across long multi
   const requireAnExtraTurn = new Set(["dml", "where", "join"]);
   process.env.SUPABASE_URL = "https://supabase.test";
   process.env.SUPABASE_PUBLISHABLE_KEY = "test-publishable-key";
-  process.env.GROQ_API_KEY = "test-groq-key";
+  process.env.GEMINI_API_KEY = "test-gemini-key";
   globalThis.fetch = async (input, init) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     if (url.startsWith(baseUrl)) {
@@ -1409,8 +1439,8 @@ test("typed Continue stays in the same nested runtime sequence across long multi
     if (url.endsWith("/auth/v1/user")) {
       return new Response(JSON.stringify({ id: "test-user" }), { status: 200 });
     }
-    if (url === "https://api.groq.com/openai/v1/chat/completions") {
-      const body = JSON.parse(String(init?.body)) as {
+    if (url === "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent") {
+      const body = parseGeminiMockRequest(url, init?.body) as {
         messages: { role: string; content: string }[];
       };
       providerRequests.push(body);
@@ -1426,10 +1456,7 @@ test("typed Continue stays in the same nested runtime sequence across long multi
               itemComplete: !requireAnExtraTurn.has(itemId) || replyCount > 1,
             });
           })();
-      return new Response(JSON.stringify({
-        choices: [{ message: { content }, finish_reason: "stop" }],
-        usage: { completion_tokens: 80 },
-      }), { status: 200 });
+      return new Response(geminiMockCompletion(content, "stop", 80), { status: 200 });
     }
     throw new Error(`Unexpected outbound request: ${url}`);
   };
@@ -1604,8 +1631,8 @@ test("typed Continue stays in the same nested runtime sequence across long multi
     else process.env.SUPABASE_URL = previousEnvironment.supabaseUrl;
     if (previousEnvironment.supabaseKey === undefined) delete process.env.SUPABASE_PUBLISHABLE_KEY;
     else process.env.SUPABASE_PUBLISHABLE_KEY = previousEnvironment.supabaseKey;
-    if (previousEnvironment.groqKey === undefined) delete process.env.GROQ_API_KEY;
-    else process.env.GROQ_API_KEY = previousEnvironment.groqKey;
+    if (previousEnvironment.geminiKey === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = previousEnvironment.geminiKey;
   }
 });
 
@@ -1614,13 +1641,18 @@ test("Topic Chat does not retry authentication, rate-limit, or non-context reque
   const previousEnvironment = {
     supabaseUrl: process.env.SUPABASE_URL,
     supabaseKey: process.env.SUPABASE_PUBLISHABLE_KEY,
-    groqKey: process.env.GROQ_API_KEY,
+    geminiKey: process.env.GEMINI_API_KEY,
   };
   const providerStatuses = [
     {
       status: 401,
       body: { error: { type: "authentication_error", code: "invalid_api_key", message: "Invalid API key." } },
       code: "TOPIC_CHAT_AUTHENTICATION_ERROR",
+    },
+    {
+      status: 404,
+      body: { error: { type: "model_not_found", code: "model_not_found", message: "The selected model was not found." } },
+      code: "TOPIC_CHAT_MODEL_NOT_FOUND",
     },
     {
       status: 429,
@@ -1640,7 +1672,7 @@ test("Topic Chat does not retry authentication, rate-limit, or non-context reque
   ];
   process.env.SUPABASE_URL = "https://supabase.test";
   process.env.SUPABASE_PUBLISHABLE_KEY = "test-publishable-key";
-  process.env.GROQ_API_KEY = "test-groq-key";
+  process.env.GEMINI_API_KEY = "test-gemini-key";
   let providerCalls = 0;
   globalThis.fetch = async (input, init) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -1650,10 +1682,10 @@ test("Topic Chat does not retry authentication, rate-limit, or non-context reque
     if (url.endsWith("/auth/v1/user")) {
       return new Response(JSON.stringify({ id: "test-user" }), { status: 200 });
     }
-    if (url === "https://api.groq.com/openai/v1/chat/completions") {
+    if (url === "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent") {
       const scenario = providerStatuses[providerCalls++];
       if (!scenario) {
-        return new Response(JSON.stringify({ choices: [] }), { status: 200 });
+        return new Response(JSON.stringify({ candidates: [] }), { status: 200 });
       }
       return new Response(JSON.stringify(scenario.body), { status: scenario.status });
     }
@@ -1722,8 +1754,8 @@ test("Topic Chat does not retry authentication, rate-limit, or non-context reque
     else process.env.SUPABASE_URL = previousEnvironment.supabaseUrl;
     if (previousEnvironment.supabaseKey === undefined) delete process.env.SUPABASE_PUBLISHABLE_KEY;
     else process.env.SUPABASE_PUBLISHABLE_KEY = previousEnvironment.supabaseKey;
-    if (previousEnvironment.groqKey === undefined) delete process.env.GROQ_API_KEY;
-    else process.env.GROQ_API_KEY = previousEnvironment.groqKey;
+    if (previousEnvironment.geminiKey === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = previousEnvironment.geminiKey;
   }
 });
 
@@ -1811,7 +1843,7 @@ test("Notes organizer preserves taxonomy, budgets batches, and handles provider 
   const previousEnvironment = {
     supabaseUrl: process.env.SUPABASE_URL,
     supabaseKey: process.env.SUPABASE_PUBLISHABLE_KEY,
-    groqKey: process.env.GROQ_API_KEY,
+    geminiKey: process.env.GEMINI_API_KEY,
   };
   let organizedItem = {
     title: "Selecting columns",
@@ -1831,23 +1863,23 @@ test("Notes organizer preserves taxonomy, budgets batches, and handles provider 
   };
   let completionText = JSON.stringify({ items: [organizedItem] });
   let jsonModeRequested = false;
-  let groqResponseStatus = 200;
-  let groqResponseHeaders = new Headers();
-  let groqErrorBody: unknown = { error: { message: "Provider rejected the request." } };
-  let groqResponseStatusSequence: number[] | null = null;
-  let groqResponseHeadersSequence: Headers[] | null = null;
+  let geminiResponseStatus = 200;
+  let geminiResponseHeaders = new Headers();
+  let geminiErrorBody: unknown = { error: { message: "Provider rejected the request." } };
+  let geminiResponseStatusSequence: number[] | null = null;
+  let geminiResponseHeadersSequence: Headers[] | null = null;
   let autoCompletion = false;
-  const groqRequests: Array<{
+  const geminiRequests: Array<{
     max_completion_tokens: number;
     response_format?: { type?: string };
     messages: Array<{ role: string; content: string }>;
   }> = [];
-  const groqRequestBodies: string[] = [];
-  const mockGroqPayloadLimitBytes = 20_000;
+  const geminiRequestBodies: string[] = [];
+  const mockGeminiPayloadLimitBytes = 20_000;
 
   process.env.SUPABASE_URL = "https://supabase.test";
   process.env.SUPABASE_PUBLISHABLE_KEY = "test-publishable-key";
-  process.env.GROQ_API_KEY = "test-groq-key";
+  process.env.GEMINI_API_KEY = "test-gemini-key";
   console.warn = (...args) => organizerWarnings.push(args.map(String).join(" "));
   console.error = (...args) => organizerErrors.push(args.map(String).join(" "));
   globalThis.fetch = async (input, init) => {
@@ -1858,23 +1890,23 @@ test("Notes organizer preserves taxonomy, budgets batches, and handles provider 
     if (url.endsWith("/auth/v1/user")) {
       return new Response(JSON.stringify({ id: "test-user" }), { status: 200 });
     }
-    if (url === "https://api.groq.com/openai/v1/chat/completions") {
+    if (url === "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent") {
       const serializedRequest = String(init?.body);
-      const requestBody = JSON.parse(serializedRequest) as {
+      const requestBody = parseGeminiMockRequest(url, serializedRequest) as {
         max_completion_tokens: number;
         response_format?: { type?: string };
         messages: Array<{ role: string; content: string }>;
       };
-      groqRequests.push(requestBody);
-      groqRequestBodies.push(serializedRequest);
+      geminiRequests.push(requestBody);
+      geminiRequestBodies.push(serializedRequest);
       jsonModeRequested = requestBody.response_format?.type === "json_object";
-      if (Buffer.byteLength(serializedRequest) > mockGroqPayloadLimitBytes) {
+      if (Buffer.byteLength(serializedRequest) > mockGeminiPayloadLimitBytes) {
         return new Response(JSON.stringify({ error: "Request payload too large." }), { status: 413 });
       }
-      const responseStatus = groqResponseStatusSequence?.shift() ?? groqResponseStatus;
-      const responseHeaders = groqResponseHeadersSequence?.shift() ?? groqResponseHeaders;
+      const responseStatus = geminiResponseStatusSequence?.shift() ?? geminiResponseStatus;
+      const responseHeaders = geminiResponseHeadersSequence?.shift() ?? geminiResponseHeaders;
       if (responseStatus !== 200) {
-        return new Response(JSON.stringify(groqErrorBody), {
+        return new Response(JSON.stringify(geminiErrorBody), {
           status: responseStatus,
           headers: responseHeaders,
         });
@@ -1892,7 +1924,7 @@ test("Notes organizer preserves taxonomy, budgets batches, and handles provider 
         });
       }
       return new Response(
-        JSON.stringify({ choices: [{ message: { content: responseText } }] }),
+        geminiMockCompletion(responseText),
         { status: 200, headers: responseHeaders },
       );
     }
@@ -2058,8 +2090,8 @@ test("Notes organizer preserves taxonomy, budgets batches, and handles provider 
       reason: "The suggested location needs review against the current Learning Path.",
     }));
     assert.ok(JSON.stringify(previousResult).length < 50_000);
-    assert.ok(Buffer.byteLength(JSON.stringify(previousResult)) > mockGroqPayloadLimitBytes);
-    const firstRetryRequestIndex = groqRequests.length;
+    assert.ok(Buffer.byteLength(JSON.stringify(previousResult)) > mockGeminiPayloadLimitBytes);
+    const firstRetryRequestIndex = geminiRequests.length;
     autoCompletion = true;
     completionText = JSON.stringify({
       items: retryChunks.map((_, index) => ({
@@ -2079,7 +2111,7 @@ test("Notes organizer preserves taxonomy, budgets batches, and handles provider 
       }),
     });
     assert.equal(reorganizedResponse.status, 200);
-    const retryRequests = groqRequests.slice(firstRetryRequestIndex);
+    const retryRequests = geminiRequests.slice(firstRetryRequestIndex);
     const retryPayloads = retryRequests.map((requestBody) => JSON.parse(
       requestBody.messages.find((message) => message.role === "user")?.content ?? "{}",
     ) as { chunks: string[]; previousResult: Array<Record<string, unknown>> });
@@ -2091,16 +2123,16 @@ test("Notes organizer preserves taxonomy, budgets batches, and handles provider 
     assert.equal(retryPayloads[0]?.previousResult[0]?.reason, previousResult[0]?.reason);
     assert.equal(retryPayloads[0]?.previousResult[0]?.needsChanges, true);
     assert.equal("content" in (retryPayloads[0]?.previousResult[0] ?? {}), false);
-    assert.ok(groqRequestBodies.slice(firstRetryRequestIndex)
-      .every((body) => Buffer.byteLength(body) <= mockGroqPayloadLimitBytes));
+    assert.ok(geminiRequestBodies.slice(firstRetryRequestIndex)
+      .every((body) => Buffer.byteLength(body) <= mockGeminiPayloadLimitBytes));
 
     const largeSourceChunks = [
       `SELECT * FROM notes WHERE topic_id = 42; -- ${"{}[](),.;:=<>+-*/ ".repeat(80).trimEnd()}`,
       `${"漢字かなカナ".repeat(45)}${"🧪🚀✨".repeat(45)}`,
       `Source chunk C ${"original text ".repeat(90).trimEnd()}`,
     ];
-    const firstBudgetedCall = groqRequests.length;
-    groqResponseHeadersSequence = [
+    const firstBudgetedCall = geminiRequests.length;
+    geminiResponseHeadersSequence = [
       new Headers({
         "x-ratelimit-remaining-tokens": "3685",
         "x-ratelimit-reset-tokens": "32.362s",
@@ -2117,7 +2149,7 @@ test("Notes organizer preserves taxonomy, budgets batches, and handles provider 
       body: JSON.stringify({ chunks: largeSourceChunks }),
     });
     assert.equal(splitResponse.status, 200);
-    const splitRequests = groqRequests.slice(firstBudgetedCall);
+    const splitRequests = geminiRequests.slice(firstBudgetedCall);
     const splitPayloads = splitRequests.map((requestBody) => JSON.parse(
       requestBody.messages.find((message) => message.role === "user")?.content ?? "{}",
     ) as { chunks: string[] });
@@ -2131,13 +2163,13 @@ test("Notes organizer preserves taxonomy, budgets batches, and handles provider 
     assert.ok(Date.now() - budgetStartTime >= 32_000, "a 32-second token reset is respected");
     assert.ok(splitRequests.every((requestBody) => requestBody.max_completion_tokens === 3_000));
 
-    groqResponseHeadersSequence = [
+    geminiResponseHeadersSequence = [
       new Headers({
         "x-ratelimit-remaining-tokens": "0",
         "x-ratelimit-reset-tokens": "60.001s",
       }),
     ];
-    const overMaximumResetCallCount = groqRequests.length;
+    const overMaximumResetCallCount = geminiRequests.length;
     const overMaximumReset = await fetch(`${baseUrl}/api/notes/organize`, {
       method: "POST",
       headers: {
@@ -2147,15 +2179,15 @@ test("Notes organizer preserves taxonomy, budgets batches, and handles provider 
       body: JSON.stringify({ chunks: largeSourceChunks }),
     });
     assert.equal(overMaximumReset.status, 502);
-    assert.equal(groqRequests.length - overMaximumResetCallCount, 1,
+    assert.equal(geminiRequests.length - overMaximumResetCallCount, 1,
       "token reset beyond 60 seconds is not waited through");
     assert.ok(organizerErrors.some((line) =>
       line.includes('"retryAfterMs":60001') && line.includes('"retryable":false'),
     ));
-    groqResponseHeadersSequence = null;
+    geminiResponseHeadersSequence = null;
 
     const oversizedChunk = "!;".repeat(5_000);
-    const oversizedCallCount = groqRequests.length;
+    const oversizedCallCount = geminiRequests.length;
     const oversizedChunkResponse = await fetch(`${baseUrl}/api/notes/organize`, {
       method: "POST",
       headers: {
@@ -2170,19 +2202,19 @@ test("Notes organizer preserves taxonomy, budgets batches, and handles provider 
       code: "ORGANIZER_REQUEST_TOO_LARGE",
       error: "A note is too large to organize safely in one request.",
     });
-    assert.equal(groqRequests.length, oversizedCallCount, "a single oversized chunk is rejected before provider calls");
+    assert.equal(geminiRequests.length, oversizedCallCount, "a single oversized chunk is rejected before provider calls");
     assert.ok(!JSON.stringify(oversizedChunkBody).includes(oversizedChunk));
 
-    groqResponseStatus = 429;
-    groqErrorBody = {
+    geminiResponseStatus = 429;
+    geminiErrorBody = {
       error: {
         code: "insufficient_quota",
         type: "insufficient_quota",
         message: "Account quota exhausted for SELECT notes; api_key=gsk_sensitive_fake_key",
       },
     };
-    groqResponseHeaders = new Headers();
-    const quotaCallCount = groqRequests.length;
+    geminiResponseHeaders = new Headers();
+    const quotaCallCount = geminiRequests.length;
     const providerFailure = await fetch(`${baseUrl}/api/notes/organize`, {
       method: "POST",
       headers: {
@@ -2199,7 +2231,7 @@ test("Notes organizer preserves taxonomy, budgets batches, and handles provider 
       code: "AI_PROVIDER_REJECTED",
       error: "AI note organization is temporarily unavailable. Please retry.",
     });
-    assert.equal(groqRequests.length - quotaCallCount, 1, "quota 429 is not retried");
+    assert.equal(geminiRequests.length - quotaCallCount, 1, "quota 429 is not retried");
     const providerSensitiveText = "Account quota exhausted for SELECT notes; api_key=gsk_sensitive_fake_key";
     assert.ok(!organizerWarnings.join("\n").includes(providerSensitiveText));
     assert.ok(!organizerErrors.join("\n").includes(providerSensitiveText));
@@ -2210,20 +2242,20 @@ test("Notes organizer preserves taxonomy, budgets batches, and handles provider 
     assert.ok(!JSON.stringify(providerFailureBody).includes("gsk_sensitive_fake_key"));
     assert.ok(!JSON.stringify(providerFailureBody).includes("SELECT notes"));
 
-    groqResponseStatus = 200;
-    groqResponseStatusSequence = [429, 200];
-    groqResponseHeadersSequence = [
+    geminiResponseStatus = 200;
+    geminiResponseStatusSequence = [429, 200];
+    geminiResponseHeadersSequence = [
       new Headers({ "retry-after": "0.02" }),
       new Headers(),
     ];
-    groqErrorBody = {
+    geminiErrorBody = {
       error: {
         code: "rate_limit_exceeded",
         type: "rate_limit_error",
         message: "Rate limit exceeded.",
       },
     };
-    const transientCallCount = groqRequests.length;
+    const transientCallCount = geminiRequests.length;
     const retryStartTime = Date.now();
     const recoveredRateLimit = await fetch(`${baseUrl}/api/notes/organize`, {
       method: "POST",
@@ -2234,7 +2266,7 @@ test("Notes organizer preserves taxonomy, budgets batches, and handles provider 
       body: JSON.stringify({ chunks: ["A SQL SELECT query returns requested columns."] }),
     });
     assert.equal(recoveredRateLimit.status, 200);
-    assert.equal(groqRequests.length - transientCallCount, 2, "transient 429 is retried once");
+    assert.equal(geminiRequests.length - transientCallCount, 2, "transient 429 is retried once");
     assert.ok(Date.now() - retryStartTime >= 15, "retry-after delay is honored");
     assert.ok(organizerWarnings.some((line) =>
       line.includes('"providerType":"rate_limit"') &&
@@ -2243,13 +2275,13 @@ test("Notes organizer preserves taxonomy, budgets batches, and handles provider 
     ));
     assert.ok(organizerWarnings.every((line) => !line.includes("A SQL SELECT query")));
 
-    groqResponseStatusSequence = [429, 429, 200];
-    groqResponseHeadersSequence = [
+    geminiResponseStatusSequence = [429, 429, 200];
+    geminiResponseHeadersSequence = [
       new Headers({ "retry-after": "0" }),
       new Headers({ "retry-after": "0" }),
       new Headers(),
     ];
-    const exhaustedRetryCount = groqRequests.length;
+    const exhaustedRetryCount = geminiRequests.length;
     const exhaustedRetry = await fetch(`${baseUrl}/api/notes/organize`, {
       method: "POST",
       headers: {
@@ -2259,13 +2291,13 @@ test("Notes organizer preserves taxonomy, budgets batches, and handles provider 
       body: JSON.stringify({ chunks: ["A SQL SELECT query returns requested columns."] }),
     });
     assert.equal(exhaustedRetry.status, 502);
-    assert.equal(groqRequests.length - exhaustedRetryCount, 2, "a persistent transient 429 is retried only once");
+    assert.equal(geminiRequests.length - exhaustedRetryCount, 2, "a persistent transient 429 is retried only once");
 
-    groqResponseStatusSequence = null;
-    groqResponseHeadersSequence = null;
-    groqResponseStatus = 429;
-    groqResponseHeaders = new Headers({ "retry-after": "60.001" });
-    const boundedWaitCount = groqRequests.length;
+    geminiResponseStatusSequence = null;
+    geminiResponseHeadersSequence = null;
+    geminiResponseStatus = 429;
+    geminiResponseHeaders = new Headers({ "retry-after": "60.001" });
+    const boundedWaitCount = geminiRequests.length;
     const boundedWaitStart = Date.now();
     const boundedWaitFailure = await fetch(`${baseUrl}/api/notes/organize`, {
       method: "POST",
@@ -2276,7 +2308,7 @@ test("Notes organizer preserves taxonomy, budgets batches, and handles provider 
       body: JSON.stringify({ chunks: ["A SQL SELECT query returns requested columns."] }),
     });
     assert.equal(boundedWaitFailure.status, 502);
-    assert.equal(groqRequests.length - boundedWaitCount, 1, "retry wait beyond the bound is not attempted");
+    assert.equal(geminiRequests.length - boundedWaitCount, 1, "retry wait beyond the bound is not attempted");
     assert.ok(Date.now() - boundedWaitStart < 1_000, "excessive Retry-After does not block the API");
 
   } finally {
@@ -2285,7 +2317,7 @@ test("Notes organizer preserves taxonomy, budgets batches, and handles provider 
     console.error = originalConsoleError;
     restoreEnvironment("SUPABASE_URL", previousEnvironment.supabaseUrl);
     restoreEnvironment("SUPABASE_PUBLISHABLE_KEY", previousEnvironment.supabaseKey);
-    restoreEnvironment("GROQ_API_KEY", previousEnvironment.groqKey);
+    restoreEnvironment("GEMINI_API_KEY", previousEnvironment.geminiKey);
   }
 });
 
@@ -2294,7 +2326,7 @@ test("authenticated SQL practice routes generate, execute, and evaluate without 
   const previousEnvironment = {
     supabaseUrl: process.env.SUPABASE_URL,
     supabaseKey: process.env.SUPABASE_PUBLISHABLE_KEY,
-    groqKey: process.env.GROQ_API_KEY,
+    geminiKey: process.env.GEMINI_API_KEY,
   };
   const question = {
     title: "Read active customers",
@@ -2320,7 +2352,7 @@ test("authenticated SQL practice routes generate, execute, and evaluate without 
 
   process.env.SUPABASE_URL = "https://supabase.test";
   process.env.SUPABASE_PUBLISHABLE_KEY = "test-publishable-key";
-  process.env.GROQ_API_KEY = "test-groq-key";
+  process.env.GEMINI_API_KEY = "test-gemini-key";
   globalThis.fetch = async (input, init) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     if (url.startsWith(baseUrl)) {
@@ -2330,23 +2362,24 @@ test("authenticated SQL practice routes generate, execute, and evaluate without 
       assert.equal(new Headers(init?.headers).get("Authorization"), "Bearer test-session");
       return new Response(JSON.stringify({ id: "test-user" }), { status: 200 });
     }
-    if (url === "https://api.groq.com/openai/v1/chat/completions") {
-      const body = JSON.parse(String(init?.body)) as {
+    if (url === "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent") {
+      const body = parseGeminiMockRequest(url, init?.body) as {
         messages: Array<{ role: string; content: string }>;
       };
       providerRequests.push(body);
       const isGeneration = body.messages[0]?.content.includes("Return only a JSON object");
       return new Response(
         JSON.stringify({
-          choices: [
-            {
-              message: {
-                content: isGeneration
+          candidates: [{
+            content: {
+              parts: [{
+                text: isGeneration
                   ? JSON.stringify({ questions: [question] })
                   : "Your WHERE filter matches the requested active customers.",
-              },
+              }],
             },
-          ],
+            finishReason: "STOP",
+          }],
         }),
         { status: 200 },
       );
@@ -2567,7 +2600,7 @@ test("authenticated SQL practice routes generate, execute, and evaluate without 
     globalThis.fetch = originalFetch;
     restoreEnvironment("SUPABASE_URL", previousEnvironment.supabaseUrl);
     restoreEnvironment("SUPABASE_PUBLISHABLE_KEY", previousEnvironment.supabaseKey);
-    restoreEnvironment("GROQ_API_KEY", previousEnvironment.groqKey);
+    restoreEnvironment("GEMINI_API_KEY", previousEnvironment.geminiKey);
   }
 });
 
