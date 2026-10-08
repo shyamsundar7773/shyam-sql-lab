@@ -214,7 +214,10 @@ export async function runPracticeSql(
     !result.columns.every((column) => typeof column === 'string') ||
     !Array.isArray(result.rows) ||
     !result.rows.every(isRecord) ||
-    (result.error !== undefined && typeof result.error !== 'string')
+    (result.error !== undefined && typeof result.error !== 'string') ||
+    (result.errorType !== undefined &&
+      result.errorType !== 'policy' &&
+      result.errorType !== 'execution')
   ) {
     throw new Error('The SQL engine returned an unexpected response.');
   }
@@ -242,6 +245,7 @@ export async function askPracticeEvaluator(options: {
         : {
             status: options.execution.status,
             sql: options.execution.sql,
+            attemptId: options.execution.attemptId,
             result: options.execution.result,
           },
       ...getPracticeEvaluatorLegacyRequestContext(options.execution),

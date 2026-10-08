@@ -52,6 +52,13 @@ const allowedFunctions = new Set([
 const maximumRowsPerTable = 25;
 const maximumResultRows = 200;
 
+export class PracticeQueryPolicyError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PracticeQueryPolicyError";
+  }
+}
+
 export function validateGeneratedQuestions(
   value: unknown,
   expectedCount: number,
@@ -150,20 +157,20 @@ export function validateGeneratedQuestions(
 
 export function executePracticeSql(question: GeneratedQuestion, sql: string) {
   if (!isText(sql, 10_000)) {
-    throw new Error("Enter a SQL query of no more than 10,000 characters.");
+    throw new PracticeQueryPolicyError("Enter a SQL query of no more than 10,000 characters.");
   }
   if (!isSingleStatement(sql)) {
-    throw new Error("Run one SQL statement at a time.");
+    throw new PracticeQueryPolicyError("Run one SQL statement at a time.");
   }
   if (!/^\s*(select|with)\b/i.test(sql)) {
-    throw new Error("Practice SQL is read-only. Start with SELECT or WITH.");
+    throw new PracticeQueryPolicyError("Practice SQL is read-only. Start with SELECT or WITH.");
   }
   const joins = sql.match(/\bjoin\b/gi) ?? [];
   const fromClause = sql.match(
     /\bfrom\b([\s\S]*?)(?=\bwhere\b|\bgroup\s+by\b|\bhaving\b|\border\s+by\b|\blimit\b|$)/i,
   )?.[1] ?? "";
   if (joins.length > 3 || /,\s*[A-Za-z_][A-Za-z0-9_]*/.test(fromClause)) {
-    throw new Error("Keep practice queries to three joins and use explicit JOIN clauses.");
+    throw new PracticeQueryPolicyError("Keep practice queries to three joins and use explicit JOIN clauses.");
   }
 
   const database = new DatabaseSync(":memory:", {

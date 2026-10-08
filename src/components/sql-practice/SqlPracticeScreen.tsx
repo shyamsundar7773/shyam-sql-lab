@@ -997,7 +997,10 @@ function ResultCard({
         </Text>
       ) : result.error ? (
         <View style={[styles.sqlError, { backgroundColor: colors.dangerSoft }]}>
-          <Text style={[styles.noticeText, { color: colors.danger }]}>{result.error}</Text>
+          <Text style={[styles.noticeText, { color: colors.danger }]}>
+            {result.errorType === 'policy' ? 'Practice query rejected: ' : 'SQL execution failed: '}
+            {result.error}
+          </Text>
         </View>
       ) : (
         <>

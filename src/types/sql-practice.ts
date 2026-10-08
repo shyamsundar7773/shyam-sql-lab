@@ -32,6 +32,7 @@ export type SqlPracticeExecutionResult = {
   ok: boolean;
   columns: string[];
   rows: Record<string, string | number | boolean | null>[];
+  errorType?: 'policy' | 'execution';
   rowLimit?: number;
   truncated?: boolean;
   error?: string;

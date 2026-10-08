@@ -23,6 +23,7 @@ import type {
 } from "../../../src/types/learning-chat.js";
 import {
   executePracticeSql,
+  PracticeQueryPolicyError,
   validateGeneratedQuestions,
   type GeneratedQuestion,
 } from "./practice-service.js";
@@ -1191,6 +1192,7 @@ app.post("/api/practice/execute", async (request, response) => {
       ok: false,
       columns: [],
       rows: [],
+      errorType: error instanceof PracticeQueryPolicyError ? "policy" : "execution",
       error: getErrorMessage(error, "The SQL statement could not be executed."),
     });
   }
@@ -1223,6 +1225,9 @@ app.post("/api/practice/evaluate", async (request, response) => {
             ? "No executed SQL answer exists yet. The user's SQL is only an unexecuted editor draft. Never treat it as submitted or executed, invent a result or error, or evaluate it as an execution. If asked for evaluation, explain that there is no executed answer to evaluate. For guidance, provide a concise hint or explanation; do not volunteer the full solution unless specifically requested."
             : "The SQL and result below are from a real execution attempt. Evaluate this exact attempt against the question. A failed execution has an actual SQL error; a successful execution may still return an incorrect answer.",
           "Answer follow-up doubts, show alternate SQL approaches, and give examples when asked.",
+          input.execution.status === "not_executed"
+            ? "No attempt ID exists because no SQL execution was performed."
+            : `Exact execution attempt ID: ${input.execution.attemptId}`,
           `Canonical curriculum IDs: category_id=${input.context.categoryId}, topic_id=${input.context.topicId}, subtopic_id=${input.context.subtopicId}`,
           `Category: ${input.context.category}`,
           `Topic: ${input.context.topic}`,
@@ -1244,7 +1249,22 @@ app.post("/api/practice/evaluate", async (request, response) => {
       { role: "user", content: input.message },
     ], 1_500);
     response.json({ reply, mode: "ai" });
-  } catch {
+  } catch (error) {
+    console.error("[SQL practice evaluator] Gemini request failed", {
+      model: sanitizeProviderIdentifier(resolveGeminiModel(process.env.GEMINI_MODEL)),
+      ...(error instanceof GeminiRequestError
+        ? {
+            category: error.category,
+            status: error.status,
+            providerType: error.providerType,
+          }
+        : {
+            errorType: error instanceof Error ? error.name : typeof error,
+            reason: error instanceof Error
+              ? redactProviderErrorMessage(error.message).slice(0, 300)
+              : "Unknown provider error",
+          }),
+    });
     response.status(502).json({ error: "The AI evaluator is temporarily unavailable. Please retry." });
   }
 });
@@ -1332,6 +1352,7 @@ type PracticeEvaluationRequest = {
     | {
         status: "succeeded" | "failed";
         sql: string;
+        attemptId: string;
         result: {
           ok: boolean;
           columns: string[];
@@ -1434,6 +1455,7 @@ function isPracticeEvaluationExecution(
     (value.status !== "succeeded" && value.status !== "failed") ||
     typeof value.sql !== "string" ||
     value.sql.length > 10_000 ||
+    !isNonEmptyString(value.attemptId, 200) ||
     !isRecord(value.result) ||
     typeof value.result.ok !== "boolean" ||
     !Array.isArray(value.result.columns) ||

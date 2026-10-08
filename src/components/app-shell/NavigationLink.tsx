@@ -21,6 +21,12 @@ const icons = {
   profile: { ios: 'person.crop.circle', android: 'account_circle', web: 'account_circle' },
 } as const satisfies Record<NavigationItem['icon'], SymbolViewProps['name']>;
 
+const mainSectionByPath: Record<string, string> = {
+  '/topic': '/learning-path',
+  '/sql-practice-evaluator': '/sql-practice',
+  '/my-practiced-notes/editor': '/my-practiced-notes',
+};
+
 type NavigationLinkProps = {
   item: NavigationItem;
   onNavigate?: () => void;
@@ -30,10 +36,11 @@ type NavigationLinkProps = {
 export function NavigationLink({ item, onNavigate, mobile = false }: NavigationLinkProps) {
   const pathname = usePathname();
   const { colors } = useAppTheme();
-  const isActive = item.href === '/' ? pathname === '/' : pathname === item.href;
+  const selectedMainPath = mainSectionByPath[pathname] ?? pathname;
+  const isActive = item.href === '/' ? selectedMainPath === '/' : selectedMainPath === item.href;
 
   return (
-    <Link href={item.href} asChild>
+    <Link href={item.href as any} asChild>
       <Pressable
         accessibilityLabel={item.label}
         accessibilityRole="link"

@@ -2453,6 +2453,36 @@ test("authenticated SQL practice routes generate, execute, and evaluate without 
       truncated: false,
     });
 
+    const rejectedPolicy = await fetch(`${baseUrl}/api/practice/execute`, {
+      method: "POST",
+      headers: { ...authorization, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        question,
+        sql: "SELECT * FROM customers a JOIN customers b ON a.name = b.name JOIN customers c ON b.name = c.name JOIN customers d ON c.name = d.name JOIN customers e ON d.name = e.name",
+      }),
+    });
+    assert.deepEqual(await rejectedPolicy.json(), {
+      ok: false,
+      columns: [],
+      rows: [],
+      errorType: "policy",
+      error: "Keep practice queries to three joins and use explicit JOIN clauses.",
+    });
+
+    const invalidSql = await fetch(`${baseUrl}/api/practice/execute`, {
+      method: "POST",
+      headers: { ...authorization, "Content-Type": "application/json" },
+      body: JSON.stringify({ question, sql: "SELECT * FORM customers" }),
+    });
+    const invalidSqlResult = await invalidSql.json() as {
+      ok: boolean;
+      errorType: string;
+      error: string;
+    };
+    assert.equal(invalidSqlResult.ok, false);
+    assert.equal(invalidSqlResult.errorType, "execution");
+    assert.match(invalidSqlResult.error, /near "FORM": syntax error/i);
+
     const evaluated = await fetch(`${baseUrl}/api/practice/evaluate`, {
       method: "POST",
       headers: { ...authorization, "Content-Type": "application/json" },
@@ -2470,6 +2500,7 @@ test("authenticated SQL practice routes generate, execute, and evaluate without 
         execution: {
           status: "succeeded",
           sql: "SELECT name FROM customers WHERE status = 'active'",
+          attemptId: "attempt-customer-1",
           result: { ok: true, columns: ["name"], rows: [{ name: "Mina" }] },
         },
         history: [{ role: "user", content: "Can you explain WHERE?" }],
@@ -2494,6 +2525,7 @@ test("authenticated SQL practice routes generate, execute, and evaluate without 
     assert.match(providerRequests[1].messages[0].content, /Expected correct SQL answer: SELECT name FROM customers WHERE status = 'active'/);
     assert.match(providerRequests[1].messages[0].content, /The SQL and result below are from a real execution attempt/);
     assert.match(providerRequests[1].messages[0].content, /"status":"succeeded"/);
+    assert.match(providerRequests[1].messages[0].content, /attempt-customer-1/);
     assert.match(providerRequests[1].messages[0].content, /SELECT name FROM customers/);
     assert.match(providerRequests[1].messages[0].content, /"name":"Mina"/);
     assert.equal(providerRequests[1].messages[1].content, "Can you explain WHERE?");
@@ -2553,6 +2585,7 @@ test("authenticated SQL practice routes generate, execute, and evaluate without 
         execution: {
           status: "failed",
           sql: "SELECT missing FROM customers",
+          attemptId: "attempt-customer-2",
           result: {
             ok: false,
             columns: [],
@@ -2588,6 +2621,7 @@ test("authenticated SQL practice routes generate, execute, and evaluate without 
         execution: {
           status: "succeeded",
           sql: "SELECT 1",
+          attemptId: "attempt-invalid-result",
           result: { ok: false, columns: [], rows: [], error: "syntax error" },
         },
         history: [],

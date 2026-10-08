@@ -3,10 +3,13 @@ import { test } from 'node:test';
 
 import { clientEnv } from '@/config/env';
 import {
+  askPracticeEvaluator,
   askTopicQuestion,
   generatePracticeQuestions,
+  runPracticeSql,
   type PracticeGenerationOptions,
 } from '@/lib/api';
+import type { PracticeQuestionContent } from '@/types/sql-practice';
 
 test('SQL practice sends the exact canonical path and generation settings', async () => {
   const previousApiUrl = clientEnv.apiUrl;
@@ -73,6 +76,113 @@ test('SQL practice sends the exact canonical path and generation settings', asyn
       /valid canonical Category, Topic, and Subtopic/,
     );
     assert.equal(requests.length, 2);
+  } finally {
+    globalThis.fetch = previousFetch;
+    clientEnv.apiUrl = previousApiUrl;
+  }
+});
+
+test('SQL practice evaluator preserves the exact execution attempt ID and payload', async () => {
+  const previousApiUrl = clientEnv.apiUrl;
+  const previousFetch = globalThis.fetch;
+  const requests: Record<string, unknown>[] = [];
+  clientEnv.apiUrl = 'https://practice-api.test';
+  globalThis.fetch = async (_input, init) => {
+    requests.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+    return new Response(JSON.stringify({ reply: 'This satisfies the requirement.' }), { status: 200 });
+  };
+
+  try {
+    const question: PracticeQuestionContent = {
+      title: 'Find Sales employees',
+      prompt: 'Find all employees who belong to the Sales department.',
+      explanation: 'Filter by department.',
+      concepts: ['SELECT', 'WHERE'],
+      tables: [{
+        name: 'employees',
+        columns: [
+          { name: 'name', type: 'TEXT' },
+          { name: 'department', type: 'TEXT' },
+        ],
+        rows: [{ name: 'Asha', department: 'Sales' }],
+      }],
+    };
+    const execution = {
+      status: 'succeeded' as const,
+      sql: "SELECT * FROM employees WHERE department = 'Sales'",
+      attemptId: 'note-a:block-a:attempt-a',
+      result: {
+        ok: true,
+        columns: ['name', 'department'],
+        rows: [{ name: 'Asha', department: 'Sales' }],
+      },
+    };
+
+    await askPracticeEvaluator({
+      accessToken: 'test-token',
+      context: {
+        category: 'SQL Foundations',
+        topic: 'SELECT Statements',
+        subtopic: 'Filtering Rows',
+        categoryId: 'sql-foundations',
+        topicId: 'select-statements',
+        subtopicId: 'filtering-rows',
+      },
+      question,
+      draftSql: execution.sql,
+      execution,
+      history: [],
+      message: 'Evaluate this SQL.',
+    });
+
+    assert.deepEqual(requests[0]?.execution, execution);
+    assert.equal(requests[0]?.draftSql, execution.sql);
+    assert.equal((requests[0]?.question as typeof question).prompt, question.prompt);
+    assert.deepEqual(requests[0]?.result, execution.result);
+  } finally {
+    globalThis.fetch = previousFetch;
+    clientEnv.apiUrl = previousApiUrl;
+  }
+});
+
+test('My Practiced Notes sends the natural-language requirement separately from SQL', async () => {
+  const previousApiUrl = clientEnv.apiUrl;
+  const previousFetch = globalThis.fetch;
+  const requestBodies: Record<string, unknown>[] = [];
+  clientEnv.apiUrl = 'https://practice-api.test';
+  globalThis.fetch = async (_input, init) => {
+    requestBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+    return new Response(JSON.stringify({
+      ok: true,
+      columns: ['name', 'department'],
+      rows: [{ name: 'Asha', department: 'Sales' }],
+      rowLimit: 200,
+      truncated: false,
+    }), { status: 200 });
+  };
+
+  try {
+    const question: PracticeQuestionContent = {
+      title: 'Sales employees',
+      prompt: 'Find all employees who belong to the Sales department.',
+      explanation: 'Filter employees by department.',
+      concepts: ['SELECT', 'WHERE'],
+      tables: [{
+        name: 'employees',
+        columns: [
+          { name: 'name', type: 'TEXT' },
+          { name: 'department', type: 'TEXT' },
+        ],
+        rows: [{ name: 'Asha', department: 'Sales' }],
+      }],
+    };
+    const sql = "SELECT * FROM employees WHERE department = 'Sales';";
+    const result = await runPracticeSql('test-token', question, sql);
+
+    assert.deepEqual(result.rows, [{ name: 'Asha', department: 'Sales' }]);
+    assert.deepEqual(requestBodies[0], { question, sql });
+    assert.equal(requestBodies[0]?.sql, sql);
+    assert.equal((requestBodies[0]?.question as PracticeQuestionContent).prompt, question.prompt);
   } finally {
     globalThis.fetch = previousFetch;
     clientEnv.apiUrl = previousApiUrl;
