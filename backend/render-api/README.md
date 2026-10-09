@@ -2,10 +2,12 @@
 
 The API provides authenticated Topic Learning Chat and SQL Practice services.
 Deploy with Node.js 22.5 or newer (the practice SQL engine uses Node's built-in
-SQLite module). The API never executes learner SQL against Supabase or another
-production database: each run seeds a fresh in-memory SQLite database from the
-question's bounded sample tables, permits read-only statements, caps returned
-rows, and closes the database after execution.
+SQLite module). The API never executes learner SQL against Supabase or another production
+database: each run seeds a fresh in-memory SQLite database from the question's
+bounded sample tables, permits single-statement reads and data changes only to
+those tables, caps returned rows, reports affected-row counts, and closes the
+database after execution. Schema changes, attached databases, and unapproved
+SQLite functions remain blocked by a distinct SQL policy error.
 
 ## Endpoints
 
@@ -16,10 +18,13 @@ rows, and closes the database after execution.
   exactly 1-10 validated questions matching the selected learning path,
   difficulty, and SQL question type.
 - `POST /api/practice/execute` verifies the access token and executes a single
-  read-only query against the isolated sample database included with a question.
+  SQL statement against the isolated sample database included with a question.
 - `POST /api/practice/evaluate` verifies the access token and sends the exact
   practice question, submitted SQL, real engine result, and recent conversation
-  to Gemini for learning feedback.
+  to Gemini for independent semantic evaluation and learning feedback. A
+  successful SQLite execution is not treated as proof that the answer is
+  correct; malformed evaluator responses and provider failures are returned as
+  errors, never as successful verdicts.
 
 All protected endpoints require `Authorization: Bearer <Supabase access token>`.
 The practice evaluator is separate from SQL execution; AI responses are never

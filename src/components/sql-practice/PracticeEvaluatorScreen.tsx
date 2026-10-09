@@ -261,7 +261,7 @@ export default function PracticeEvaluatorScreen() {
         const loadedQuestion = selectedAttempt
           ? {
               ...savedQuestion,
-              draft_sql: savedQuestion.draft_sql,
+              draft_sql: selectedAttempt.sql,
               latest_result: selectedAttempt.execution_result,
             }
           : { ...savedQuestion, latest_result: null };

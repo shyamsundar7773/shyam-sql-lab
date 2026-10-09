@@ -2349,6 +2349,8 @@ test("authenticated SQL practice routes generate, execute, and evaluate without 
     ],
   };
   const providerRequests: Array<{ messages: Array<{ role: string; content: string }> }> = [];
+  let evaluatorOverride: string | null = null;
+  let providerFailure = false;
 
   process.env.SUPABASE_URL = "https://supabase.test";
   process.env.SUPABASE_PUBLISHABLE_KEY = "test-publishable-key";
@@ -2367,7 +2369,20 @@ test("authenticated SQL practice routes generate, execute, and evaluate without 
         messages: Array<{ role: string; content: string }>;
       };
       providerRequests.push(body);
-      const isGeneration = body.messages[0]?.content.includes("Return only a JSON object");
+      if (providerFailure) {
+        return new Response(JSON.stringify({ error: { status: "UNAVAILABLE" } }), { status: 503 });
+      }
+      const systemPrompt = body.messages[0]?.content ?? "";
+      const isGeneration = systemPrompt.includes("Create SQL practice questions");
+      const executionStatus = /SQL execution context: \{"status":"([^"]+)"/.exec(systemPrompt)?.[1];
+      const submittedSql = /Current SQL editor draft \(not necessarily executed\): ([^\n]*)/.exec(
+        systemPrompt,
+      )?.[1] ?? "";
+      const correctness = executionStatus !== "succeeded"
+        ? "not_evaluated"
+        : /\bstatus\s*=\s*'inactive'/i.test(submittedSql)
+          ? "incorrect"
+          : "correct";
       return new Response(
         JSON.stringify({
           candidates: [{
@@ -2375,7 +2390,20 @@ test("authenticated SQL practice routes generate, execute, and evaluate without 
               parts: [{
                 text: isGeneration
                   ? JSON.stringify({ questions: [question] })
-                  : "Your WHERE filter matches the requested active customers.",
+                  : evaluatorOverride ?? JSON.stringify({
+                      reply: "Here is a concise explanation.",
+                      evaluation: {
+                        correctness,
+                        explanation: correctness === "incorrect"
+                          ? "This predicate selects inactive customers instead of active ones."
+                          : correctness === "not_evaluated"
+                            ? "No semantic verdict is available without a successful execution."
+                            : "The query meets the requested result requirement.",
+                        feedback: correctness === "incorrect"
+                          ? ["Filter for status = 'active'."]
+                          : [],
+                      },
+                    }),
               }],
             },
             finishReason: "STOP",
@@ -2453,20 +2481,73 @@ test("authenticated SQL practice routes generate, execute, and evaluate without 
       truncated: false,
     });
 
+    const insertQuestion = {
+      title: "Archive John",
+      prompt: "Copy John Doe's matching user record into users_archive.",
+      explanation: "Copy only the user matching every stated predicate.",
+      concepts: ["INSERT", "SELECT", "WHERE"],
+      tables: [
+        {
+          name: "users",
+          columns: [
+            { name: "user_id", type: "INTEGER" },
+            { name: "username", type: "TEXT" },
+            { name: "email", type: "TEXT" },
+          ],
+          rows: [{ user_id: 1, username: "john_doe", email: "john@example.com" }],
+        },
+        {
+          name: "users_archive",
+          columns: [
+            { name: "user_id", type: "INTEGER" },
+            { name: "username", type: "TEXT" },
+            { name: "email", type: "TEXT" },
+          ],
+          rows: [],
+        },
+      ],
+    };
+    const reportedInsert = await fetch(`${baseUrl}/api/practice/execute`, {
+      method: "POST",
+      headers: { ...authorization, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        question: insertQuestion,
+        sql: `INSERT INTO users_archive (user_id, username, email)
+SELECT user_id, username, email
+FROM users
+WHERE user_id = 1
+  AND username = 'john_doe'
+  AND email = 'john@example.com';`,
+      }),
+    });
+    assert.deepEqual(await reportedInsert.json(), {
+      ok: true,
+      columns: [],
+      rows: [],
+      rowsAffected: 1,
+      rowLimit: 200,
+      truncated: false,
+    });
+
     const rejectedPolicy = await fetch(`${baseUrl}/api/practice/execute`, {
       method: "POST",
       headers: { ...authorization, "Content-Type": "application/json" },
       body: JSON.stringify({
         question,
-        sql: "SELECT * FROM customers a JOIN customers b ON a.name = b.name JOIN customers c ON b.name = c.name JOIN customers d ON c.name = d.name JOIN customers e ON d.name = e.name",
+        sql: "SELECT randomblob(100000000) FROM customers",
       }),
     });
-    assert.deepEqual(await rejectedPolicy.json(), {
+    const policyResult = await rejectedPolicy.json() as {
+      ok: boolean;
+      errorType: string;
+      error: string;
+    };
+    assert.deepEqual(policyResult, {
       ok: false,
       columns: [],
       rows: [],
       errorType: "policy",
-      error: "Keep practice queries to three joins and use explicit JOIN clauses.",
+      error: "This SQL operation is not allowed in the isolated practice database (the randomblob function is not allowed).",
     });
 
     const invalidSql = await fetch(`${baseUrl}/api/practice/execute`, {
@@ -2483,33 +2564,39 @@ test("authenticated SQL practice routes generate, execute, and evaluate without 
     assert.equal(invalidSqlResult.errorType, "execution");
     assert.match(invalidSqlResult.error, /near "FORM": syntax error/i);
 
+    const successfulEvaluationRequest = {
+      context: {
+        categoryId: "sql-foundations",
+        topicId: "select-statements",
+        subtopicId: "filtering-rows",
+        category: "SQL Foundations",
+        topic: "SELECT Statements",
+        subtopic: "Filtering Rows",
+      },
+      question,
+      draftSql: "SELECT name FROM customers WHERE status = 'active'",
+      execution: {
+        status: "succeeded",
+        sql: "SELECT name FROM customers WHERE status = 'active'",
+        attemptId: "attempt-customer-1",
+        result: { ok: true, columns: ["name"], rows: [{ name: "Mina" }] },
+      },
+      history: [{ role: "user", content: "Can you explain WHERE?" }],
+      message: "Show an alternate approach.",
+    };
     const evaluated = await fetch(`${baseUrl}/api/practice/evaluate`, {
       method: "POST",
       headers: { ...authorization, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        context: {
-          categoryId: "sql-foundations",
-          topicId: "select-statements",
-          subtopicId: "filtering-rows",
-          category: "SQL Foundations",
-          topic: "SELECT Statements",
-          subtopic: "Filtering Rows",
-        },
-        question,
-        draftSql: "SELECT name FROM customers WHERE status = 'active'",
-        execution: {
-          status: "succeeded",
-          sql: "SELECT name FROM customers WHERE status = 'active'",
-          attemptId: "attempt-customer-1",
-          result: { ok: true, columns: ["name"], rows: [{ name: "Mina" }] },
-        },
-        history: [{ role: "user", content: "Can you explain WHERE?" }],
-        message: "Show an alternate approach.",
-      }),
+      body: JSON.stringify(successfulEvaluationRequest),
     });
     assert.equal(evaluated.status, 200);
     assert.deepEqual(await evaluated.json(), {
-      reply: "Your WHERE filter matches the requested active customers.",
+      reply: "**Evaluation: correct**\n\nThe query meets the requested result requirement.\n\nHere is a concise explanation.",
+      evaluation: {
+        correctness: "correct",
+        explanation: "The query meets the requested result requirement.",
+        feedback: [],
+      },
       mode: "ai",
     });
 
@@ -2530,6 +2617,50 @@ test("authenticated SQL practice routes generate, execute, and evaluate without 
     assert.match(providerRequests[1].messages[0].content, /"name":"Mina"/);
     assert.equal(providerRequests[1].messages[1].content, "Can you explain WHERE?");
     assert.equal(providerRequests[1].messages[2].content, "Show an alternate approach.");
+    assert.match(providerRequests[1].messages[0].content, /independent semantic SQL evaluator/);
+    assert.match(providerRequests[1].messages[0].content, /Judge semantic equivalence, not textual similarity/);
+    assert.match(providerRequests[1].messages[0].content, /comma-style joins/);
+
+    const alternativeSql = "select name from customers where status='active'";
+    const alternativeEvaluation = await fetch(`${baseUrl}/api/practice/evaluate`, {
+      method: "POST",
+      headers: { ...authorization, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...successfulEvaluationRequest,
+        draftSql: alternativeSql,
+        execution: {
+          ...successfulEvaluationRequest.execution,
+          sql: alternativeSql,
+        },
+      }),
+    });
+    assert.equal(alternativeEvaluation.status, 200);
+    assert.equal(
+      ((await alternativeEvaluation.json()) as { evaluation: { correctness: string } }).evaluation.correctness,
+      "correct",
+      "a formatting/capitalization-equivalent formulation keeps the model's correct verdict",
+    );
+
+    const incorrectSql = "SELECT name FROM customers WHERE status = 'inactive'";
+    const incorrectEvaluation = await fetch(`${baseUrl}/api/practice/evaluate`, {
+      method: "POST",
+      headers: { ...authorization, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...successfulEvaluationRequest,
+        draftSql: incorrectSql,
+        execution: {
+          ...successfulEvaluationRequest.execution,
+          sql: incorrectSql,
+          result: { ok: true, columns: ["name"], rows: [{ name: "Ravi" }] },
+        },
+      }),
+    });
+    assert.equal(incorrectEvaluation.status, 200);
+    assert.equal(
+      ((await incorrectEvaluation.json()) as { evaluation: { correctness: string } }).evaluation.correctness,
+      "incorrect",
+      "the evaluator's exercise-specific incorrect verdict is preserved",
+    );
 
     const unexecuted = await fetch(`${baseUrl}/api/practice/evaluate`, {
       method: "POST",
@@ -2551,20 +2682,24 @@ test("authenticated SQL practice routes generate, execute, and evaluate without 
       }),
     });
     assert.equal(unexecuted.status, 200);
+    assert.equal(
+      ((await unexecuted.json()) as { evaluation: { correctness: string } }).evaluation.correctness,
+      "not_evaluated",
+    );
     assert.match(
-      providerRequests[2].messages[0].content,
+      providerRequests[4].messages[0].content,
       /No executed SQL answer exists yet/,
     );
     assert.match(
-      providerRequests[2].messages[0].content,
+      providerRequests[4].messages[0].content,
       /If asked for evaluation, explain that there is no executed answer to evaluate/,
     );
     assert.match(
-      providerRequests[2].messages[0].content,
+      providerRequests[4].messages[0].content,
       /Current SQL editor draft \(not necessarily executed\): SELECT name FROM customers/,
     );
     assert.match(
-      providerRequests[2].messages[0].content,
+      providerRequests[4].messages[0].content,
       /SQL execution context: \{"status":"not_executed"\}/,
     );
 
@@ -2598,11 +2733,16 @@ test("authenticated SQL practice routes generate, execute, and evaluate without 
       }),
     });
     assert.equal(failedExecution.status, 200);
+    assert.equal(
+      ((await failedExecution.json()) as { evaluation: { correctness: string } }).evaluation.correctness,
+      "not_evaluated",
+      "an SQLite error remains distinct from semantic correctness",
+    );
     assert.match(
-      providerRequests[3].messages[0].content,
+      providerRequests[5].messages[0].content,
       /A failed execution has an actual SQL error/,
     );
-    assert.match(providerRequests[3].messages[0].content, /no such column: missing/);
+    assert.match(providerRequests[5].messages[0].content, /no such column: missing/);
 
     const invalidExecution = await fetch(`${baseUrl}/api/practice/evaluate`, {
       method: "POST",
@@ -2629,7 +2769,57 @@ test("authenticated SQL practice routes generate, execute, and evaluate without 
       }),
     });
     assert.equal(invalidExecution.status, 400);
-    assert.equal(providerRequests.length, 4);
+    assert.equal(providerRequests.length, 6);
+
+    evaluatorOverride = JSON.stringify({
+      reply: "It looks correct.",
+      evaluation: {
+        correctness: "correct",
+        explanation: "The SQL is correct.",
+        feedback: "Use the right table.",
+      },
+    });
+    const malformedEvaluation = await fetch(`${baseUrl}/api/practice/evaluate`, {
+      method: "POST",
+      headers: { ...authorization, "Content-Type": "application/json" },
+      body: JSON.stringify(successfulEvaluationRequest),
+    });
+    assert.equal(malformedEvaluation.status, 502);
+    assert.deepEqual(await malformedEvaluation.json(), {
+      error: "The AI evaluator returned an invalid evaluation. Please retry.",
+    });
+
+    providerFailure = true;
+    const failedGemini = await fetch(`${baseUrl}/api/practice/evaluate`, {
+      method: "POST",
+      headers: { ...authorization, "Content-Type": "application/json" },
+      body: JSON.stringify(successfulEvaluationRequest),
+    });
+    assert.equal(failedGemini.status, 502);
+    assert.equal(
+      (await failedGemini.json() as { error: string }).error,
+      "The AI evaluator is temporarily unavailable. Please retry.",
+    );
+
+    providerFailure = false;
+    evaluatorOverride = JSON.stringify({
+      reply: "The query returns the right user but misses one requested predicate.",
+      evaluation: {
+        correctness: "partially_correct",
+        explanation: "The result is incomplete because one filter is missing.",
+        feedback: ["Add the email predicate from the requirement."],
+      },
+    });
+    const partialEvaluation = await fetch(`${baseUrl}/api/practice/evaluate`, {
+      method: "POST",
+      headers: { ...authorization, "Content-Type": "application/json" },
+      body: JSON.stringify(successfulEvaluationRequest),
+    });
+    assert.equal(partialEvaluation.status, 200);
+    assert.equal(
+      (await partialEvaluation.json() as { evaluation: { correctness: string } }).evaluation.correctness,
+      "partially_correct",
+    );
   } finally {
     globalThis.fetch = originalFetch;
     restoreEnvironment("SUPABASE_URL", previousEnvironment.supabaseUrl);

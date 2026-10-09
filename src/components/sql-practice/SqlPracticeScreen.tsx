@@ -492,7 +492,9 @@ export default function SqlPracticeScreen() {
       );
       const savedAt = new Date().toISOString();
       const nextStatus: SqlPracticeStatus =
-        result.ok && result.rows.length > 0 ? 'needs_review' : 'in_progress';
+        result.ok && (result.rows.length > 0 || (result.rowsAffected ?? 0) > 0)
+          ? 'needs_review'
+          : 'in_progress';
       updateActiveSetLocally((set) => ({
         ...set,
         questions: set.questions.map((question) =>
@@ -1005,12 +1007,13 @@ function ResultCard({
       ) : (
         <>
           <Text style={[styles.resultSummary, { color: colors.success }]}>
-            Query ran successfully · {result.rows.length}
-            {result.truncated ? '+' : ''} row(s)
+            Query ran successfully · {result.rowsAffected !== undefined
+              ? `${result.rowsAffected} row(s) affected`
+              : `${result.rows.length}${result.truncated ? '+' : ''} row(s) returned`}
           </Text>
-          {result.rows.length === 0 ? (
+          {result.rows.length === 0 && result.rowsAffected === undefined ? (
             <Text style={[styles.emptyText, { color: colors.secondaryText }]}>No rows returned.</Text>
-          ) : (
+          ) : result.rows.length > 0 ? (
             <ScrollView horizontal showsHorizontalScrollIndicator>
               <View>
                 <View style={styles.tableRow}>
@@ -1042,7 +1045,7 @@ function ResultCard({
                 ))}
               </View>
             </ScrollView>
-          )}
+          ) : null}
           {result.truncated ? (
             <Text style={[styles.helperText, { color: colors.secondaryText }]}>
               Display capped at {result.rowLimit} rows.

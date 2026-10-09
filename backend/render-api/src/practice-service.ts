@@ -78,9 +78,7 @@ export function validateGeneratedQuestions(
       !isText(item.explanation, 2000) ||
       (requireSolution && !isText(item.solutionSql, 10_000)) ||
       (item.solutionSql !== undefined &&
-        (!isText(item.solutionSql, 10_000) ||
-          !/^\s*(select|with)\b/i.test(item.solutionSql) ||
-          !isSingleStatement(item.solutionSql))) ||
+        (!isText(item.solutionSql, 10_000) || !isSingleStatement(item.solutionSql))) ||
       !Array.isArray(item.concepts) ||
       item.concepts.length > 8 ||
       !item.concepts.every((concept) => isText(concept, 80)) ||
@@ -162,16 +160,6 @@ export function executePracticeSql(question: GeneratedQuestion, sql: string) {
   if (!isSingleStatement(sql)) {
     throw new PracticeQueryPolicyError("Run one SQL statement at a time.");
   }
-  if (!/^\s*(select|with)\b/i.test(sql)) {
-    throw new PracticeQueryPolicyError("Practice SQL is read-only. Start with SELECT or WITH.");
-  }
-  const joins = sql.match(/\bjoin\b/gi) ?? [];
-  const fromClause = sql.match(
-    /\bfrom\b([\s\S]*?)(?=\bwhere\b|\bgroup\s+by\b|\bhaving\b|\border\s+by\b|\blimit\b|$)/i,
-  )?.[1] ?? "";
-  if (joins.length > 3 || /,\s*[A-Za-z_][A-Za-z0-9_]*/.test(fromClause)) {
-    throw new PracticeQueryPolicyError("Keep practice queries to three joins and use explicit JOIN clauses.");
-  }
 
   const database = new DatabaseSync(":memory:", {
     allowExtension: false,
@@ -189,6 +177,7 @@ export function executePracticeSql(question: GeneratedQuestion, sql: string) {
   });
 
   try {
+    const practiceTableNames = new Set(question.tables.map((table) => table.name.toLowerCase()));
     for (const table of question.tables) {
       const columnDefinitions = table.columns
         .map((column) => `${quoteIdentifier(column.name)} ${column.type.toUpperCase()}`)
@@ -213,10 +202,20 @@ export function executePracticeSql(question: GeneratedQuestion, sql: string) {
       }
     }
 
-    database.setAuthorizer((actionCode, _firstArgument, secondArgument) => {
+    let deniedOperation: string | null = null;
+    database.setAuthorizer((actionCode, firstArgument, secondArgument) => {
       if (
         actionCode === constants.SQLITE_SELECT ||
         actionCode === constants.SQLITE_READ
+      ) {
+        return constants.SQLITE_OK;
+      }
+      if (
+        (actionCode === constants.SQLITE_INSERT ||
+          actionCode === constants.SQLITE_UPDATE ||
+          actionCode === constants.SQLITE_DELETE) &&
+        typeof firstArgument === "string" &&
+        practiceTableNames.has(firstArgument.toLowerCase())
       ) {
         return constants.SQLITE_OK;
       }
@@ -227,31 +226,64 @@ export function executePracticeSql(question: GeneratedQuestion, sql: string) {
       ) {
         return constants.SQLITE_OK;
       }
+      deniedOperation ??= describeDeniedOperation(actionCode, firstArgument, secondArgument);
       return constants.SQLITE_DENY;
     });
 
-    const statement = database.prepare(sql);
-    const columns = statement.columns().map((column) => column.name);
-    const rows: Record<string, string | number | boolean | null>[] = [];
-    let truncated = false;
-    for (const row of statement.iterate()) {
-      if (rows.length >= maximumResultRows) {
-        truncated = true;
-        break;
+    try {
+      const statement = database.prepare(sql);
+      const columns = statement.columns().map((column) => column.name);
+      const rows: Record<string, string | number | boolean | null>[] = [];
+      let truncated = false;
+      let rowsAffected: number | undefined;
+      if (columns.length === 0) {
+        rowsAffected = Number(statement.run().changes);
+      } else {
+        for (const row of statement.iterate()) {
+          if (rows.length >= maximumResultRows) {
+            truncated = true;
+            break;
+          }
+          rows.push(normalizeRow(row));
+        }
       }
-      rows.push(normalizeRow(row));
-    }
 
-    return {
-      ok: true as const,
-      columns,
-      rows,
-      rowLimit: maximumResultRows,
-      truncated,
-    };
+      return {
+        ok: true as const,
+        columns,
+        rows,
+        ...(rowsAffected === undefined ? {} : { rowsAffected }),
+        rowLimit: maximumResultRows,
+        truncated,
+      };
+    } catch (error) {
+      if (deniedOperation !== null) {
+        throw new PracticeQueryPolicyError(
+          `This SQL operation is not allowed in the isolated practice database (${deniedOperation}).`,
+        );
+      }
+      throw error;
+    }
   } finally {
     database.close();
   }
+}
+
+function describeDeniedOperation(actionCode: number, firstArgument: unknown, secondArgument: unknown) {
+  if (
+    actionCode === constants.SQLITE_INSERT ||
+    actionCode === constants.SQLITE_UPDATE ||
+    actionCode === constants.SQLITE_DELETE
+  ) {
+    return "writes are limited to the question's practice tables";
+  }
+  if (actionCode === constants.SQLITE_FUNCTION && typeof secondArgument === "string") {
+    return `the ${secondArgument} function is not allowed`;
+  }
+  if (typeof firstArgument === "string") {
+    return `${firstArgument} is not allowed`;
+  }
+  return "the requested database operation is not allowed";
 }
 
 function isSingleStatement(sql: string) {

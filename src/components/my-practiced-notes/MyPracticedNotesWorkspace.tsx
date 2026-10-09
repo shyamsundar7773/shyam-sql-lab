@@ -276,7 +276,7 @@ export function MyPracticedNotesWorkspace({
       ),
     }));
 
-    const blockSql = targetBlock.sql.trim() || 'SELECT 1;';
+    const blockSql = targetBlock.sql;
 
     try {
       const payload = buildPracticeQuestionContext(targetNote, targetBlock.question);
@@ -386,6 +386,11 @@ export function MyPracticedNotesWorkspace({
     return (
       <View style={[styles.outputCard, { backgroundColor: colors.surfaceMuted, borderColor: colors.border }]}>
         <Text style={[styles.outputHeader, { color: colors.primaryText }]}>OUTPUT</Text>
+        {output.rowsAffected !== undefined ? (
+          <Text style={[styles.outputText, { color: colors.primaryText }]}>
+            {output.rowsAffected} row(s) affected
+          </Text>
+        ) : null}
         <ScrollView horizontal style={styles.outputTableWrap} contentContainerStyle={styles.outputTableContent}>
           <View style={styles.outputTable}>
             {output.columns.length > 0 ? (

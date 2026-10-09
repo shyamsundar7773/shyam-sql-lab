@@ -41,7 +41,7 @@ test("practice query executes against an isolated SQLite dataset", () => {
   );
 });
 
-test("practice query supports aggregates and rejects unbounded SQLite functions", () => {
+test("practice query supports aggregates and classifies disallowed functions as policy rejections", () => {
   assert.deepEqual(
     executePracticeSql(question, "SELECT COUNT(*) AS total FROM customers"),
     {
@@ -54,7 +54,7 @@ test("practice query supports aggregates and rejects unbounded SQLite functions"
   );
   assert.throws(
     () => executePracticeSql(question, "SELECT randomblob(100000000)"),
-    /not authorized/i,
+    /operation is not allowed.*randomblob function is not allowed/i,
   );
 });
 
@@ -100,7 +100,7 @@ test("practice accepts valid employee filtering and aggregation queries", () => 
   );
 });
 
-test("practice permits zero through three explicit joins and rejects four", () => {
+test("practice accepts explicit, comma-style, and more than three joins", () => {
   const joinQuestion: GeneratedQuestion = {
     ...question,
     tables: [
@@ -158,13 +158,78 @@ test("practice permits zero through three explicit joins and rejects four", () =
       `${count} explicit joins should be accepted`,
     );
   }
-  assert.throws(
-    () => executePracticeSql(joinQuestion, baseQuery + joins.join("")),
-    /three joins and use explicit JOIN/,
+  assert.equal(executePracticeSql(joinQuestion, baseQuery + joins.join("")).ok, true);
+  assert.equal(
+    executePracticeSql(joinQuestion, "SELECT a.name FROM employees a, employees b").ok,
+    true,
   );
-  assert.throws(
-    () => executePracticeSql(joinQuestion, "SELECT a.name FROM employees a, employees b"),
-    /three joins and use explicit JOIN/,
+});
+
+test("the reported INSERT SELECT query runs in its isolated question database", () => {
+  const insertQuestion: GeneratedQuestion = {
+    ...question,
+    tables: [
+      {
+        name: "users",
+        columns: [
+          { name: "user_id", type: "INTEGER" },
+          { name: "username", type: "TEXT" },
+          { name: "email", type: "TEXT" },
+        ],
+        rows: [{
+          user_id: 1,
+          username: "john_doe",
+          email: "john@example.com",
+        }],
+      },
+      {
+        name: "users_archive",
+        columns: [
+          { name: "user_id", type: "INTEGER" },
+          { name: "username", type: "TEXT" },
+          { name: "email", type: "TEXT" },
+        ],
+        rows: [],
+      },
+    ],
+  };
+  const sql = `INSERT INTO users_archive (user_id, username, email)
+SELECT user_id, username, email
+FROM users
+WHERE user_id = 1
+  AND username = 'john_doe'
+  AND email = 'john@example.com';`;
+
+  assert.equal(
+    validateGeneratedQuestions([{ ...insertQuestion, solutionSql: sql }], 1, true),
+    true,
+    "INSERT SELECT is a valid executable solution in the isolated question database",
+  );
+  assert.deepEqual(executePracticeSql(insertQuestion, sql), {
+    ok: true,
+    columns: [],
+    rows: [],
+    rowsAffected: 1,
+    rowLimit: 200,
+    truncated: false,
+  });
+  assert.deepEqual(
+    executePracticeSql(insertQuestion, "SELECT * FROM users_archive").rows,
+    [],
+    "each execution uses a fresh in-memory database",
+  );
+  assert.deepEqual(
+    executePracticeSql(
+      insertQuestion,
+      `INSERT INTO users_archive (user_id, username, email)
+SELECT user_id, username, email
+FROM users
+WHERE user_id = 1
+  AND username = 'john_doe'
+  AND email = 'john@example.com'
+RETURNING user_id, username, email;`,
+    ).rows,
+    [{ user_id: 1, username: "john_doe", email: "john@example.com" }],
   );
 });
 
@@ -175,10 +240,24 @@ test("practice preserves SQLite syntax errors separately from policy rejections"
   );
 });
 
-test("practice SQL rejects write statements and multiple statements", () => {
+test("practice confines permitted writes and rejects unsafe operations distinctly", () => {
+  assert.deepEqual(
+    executePracticeSql(question, "DELETE FROM customers WHERE status = 'inactive'"),
+    {
+      ok: true,
+      columns: [],
+      rows: [],
+      rowsAffected: 1,
+      rowLimit: 200,
+      truncated: false,
+    },
+  );
   assert.throws(
-    () => executePracticeSql(question, "DELETE FROM customers"),
-    /read-only/,
+    () => executePracticeSql(question, "CREATE TABLE injected (value TEXT)"),
+    (error: unknown) =>
+      error instanceof Error &&
+      error.name === "PracticeQueryPolicyError" &&
+      /not allowed in the isolated practice database/.test(error.message),
   );
   assert.throws(
     () => executePracticeSql(question, "SELECT * FROM customers; DROP TABLE customers"),
@@ -190,11 +269,7 @@ test("practice SQL rejects write statements and multiple statements", () => {
         question,
         "WITH RECURSIVE counter(value) AS (SELECT 1 UNION ALL SELECT value + 1 FROM counter) SELECT value FROM counter",
       ),
-    /not authorized/i,
-  );
-  assert.throws(
-    () => executePracticeSql(question, "SELECT a.name FROM customers a, customers b"),
-    /explicit JOIN/,
+    /not allowed in the isolated practice database/,
   );
 });
 
@@ -207,13 +282,14 @@ test("practice question validation rejects unsafe schema identifiers", () => {
   assert.equal(validateGeneratedQuestions([question], 1), true);
 });
 
-test("newly generated questions require a valid read-only SQL solution", () => {
+test("practice questions require a valid single-statement SQL solution", () => {
   assert.equal(validateGeneratedQuestions([question], 1, true), true);
   const missingSolution = { ...question };
   delete (missingSolution as Partial<GeneratedQuestion>).solutionSql;
   assert.equal(validateGeneratedQuestions([missingSolution], 1, true), false);
+  assert.equal(validateGeneratedQuestions([{ ...question, solutionSql: "DELETE FROM customers" }], 1, true), true);
   assert.equal(
-    validateGeneratedQuestions([{ ...question, solutionSql: "DELETE FROM customers" }], 1, true),
+    validateGeneratedQuestions([{ ...question, solutionSql: "DELETE FROM customers; SELECT 1" }], 1, true),
     false,
   );
   assert.equal(
