@@ -74,7 +74,7 @@ export function validateGeneratedQuestions(
     }
     if (
       !isText(item.title, 160) ||
-      !isText(item.prompt, 2000) ||
+      !isText(item.prompt, 20_000) ||
       !isText(item.explanation, 2000) ||
       (requireSolution && !isText(item.solutionSql, 10_000)) ||
       (item.solutionSql !== undefined &&

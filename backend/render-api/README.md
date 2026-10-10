@@ -18,7 +18,11 @@ SQLite functions remain blocked by a distinct SQL policy error.
   exactly 1-10 validated questions matching the selected learning path,
   difficulty, and SQL question type.
 - `POST /api/practice/execute` verifies the access token and executes a single
-  SQL statement against the isolated sample database included with a question.
+  SQL statement against an isolated sample database. My Practiced Notes can
+  provide the complete exercise as `exerciseText`; named Markdown tables,
+  simple `CREATE TABLE`/`INSERT ... VALUES` examples, and unambiguous
+  tab-separated tables are parsed into the validated sample schema. Pasted
+  setup SQL is parsed, never executed to create the database.
 - `POST /api/practice/evaluate` verifies the access token and sends the exact
   practice question, submitted SQL, real engine result, and recent conversation
   to Gemini for independent semantic evaluation and learning feedback. A

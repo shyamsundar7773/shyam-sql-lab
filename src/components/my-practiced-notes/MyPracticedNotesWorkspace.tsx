@@ -283,13 +283,18 @@ export function MyPracticedNotesWorkspace({
     const blockSql = targetBlock.sql;
 
     try {
-      const tables = parsePracticeTablesJson(targetBlock.schemaJson);
+      const hasLegacySchema = targetBlock.schemaJson.trim().length > 0;
+      const tables = hasLegacySchema ? parsePracticeTablesJson(targetBlock.schemaJson) : [];
       const payload = buildPracticeQuestionContext(targetNote, targetBlock.question, tables);
       const result = await runPracticeSql(
         session.access_token,
         payload,
         blockSql,
+        hasLegacySchema ? undefined : targetBlock.question,
       );
+      const evaluationQuestion = result.resolvedQuestion ?? payload;
+      const executionResult = { ...result };
+      delete executionResult.resolvedQuestion;
 
       const context = {
         category: category?.title ?? targetNote.categoryId,
@@ -300,14 +305,12 @@ export function MyPracticedNotesWorkspace({
         subtopicId: targetNote.subtopicId,
       };
 
-      const evaluationMessage = targetBlock.question.trim()
-        ? `Evaluate whether this SQL satisfies the requirement: ${targetBlock.question}`
-        : 'Evaluate this SQL query against the requirement and execution result.';
+      const evaluationMessage = 'Evaluate this SQL against the pasted exercise statement, tables, sample data, and execution result.';
 
       const execution = {
         status: result.ok ? 'succeeded' : 'failed',
         sql: blockSql,
-        result,
+        result: executionResult,
         attemptId,
       } satisfies PracticeEvaluatorExecution;
 
@@ -319,7 +322,7 @@ export function MyPracticedNotesWorkspace({
           evaluation = await askPracticeEvaluator({
             accessToken: session.access_token,
             context,
-            question: payload,
+            question: evaluationQuestion,
             draftSql: blockSql,
             execution,
             history: [],
@@ -375,7 +378,11 @@ export function MyPracticedNotesWorkspace({
         <View style={[styles.outputCard, { backgroundColor: colors.surfaceMuted, borderColor: colors.border }]}>
           <Text style={[styles.outputHeader, { color: colors.primaryText }]}>OUTPUT</Text>
           <Text style={[styles.errorText, { color: colors.danger }]}>
-            {isPolicyRejection ? '⚠ Practice query rejected' : '✕ SQL execution failed'}
+            {isPolicyRejection
+              ? '⚠ Practice query rejected'
+              : output.errorType === 'setup'
+                ? 'Exercise setup needed'
+                : '✕ SQL execution failed'}
           </Text>
           <Text style={[styles.outputText, { color: colors.primaryText }]}>{output.error}</Text>
         </View>
@@ -624,7 +631,12 @@ export function MyPracticedNotesWorkspace({
 
                       {note.sqlBlocks.map((block) => (
                         <View key={block.id} style={[styles.sqlBlock, { backgroundColor: colors.background, borderColor: colors.border }]}>
-                          <Text style={[styles.blockLabel, { color: colors.secondaryText }]}>Question / Requirement</Text>
+                          <Text style={[styles.blockLabel, { color: colors.secondaryText }]}>
+                            Paste your SQL question, table structure and sample data
+                          </Text>
+                          <Text style={[styles.emptyText, { color: colors.secondaryText }]}>
+                            You can paste the complete question, CREATE TABLE statements, Markdown tables, or sample rows together.
+                          </Text>
                           <TextInput
                             value={block.question}
                             onChangeText={(value) =>
@@ -639,7 +651,7 @@ export function MyPracticedNotesWorkspace({
                             onContentSizeChange={(event) =>
                               updateInputHeight(
                                 `${block.id}:question`,
-                                64,
+                                120,
                                 event.nativeEvent.contentSize.height,
                               )
                             }
@@ -648,45 +660,14 @@ export function MyPracticedNotesWorkspace({
                             style={[
                               styles.questionInput,
                               {
-                                height: inputHeights[`${block.id}:question`] ?? 64,
+                                height: inputHeights[`${block.id}:question`] ?? 120,
                                 color: colors.primaryText,
                                 backgroundColor: colors.surfaceMuted,
                               },
                             ]}
-                            placeholder="Describe the SQL task and its requirements."
+                            placeholder={'Find completed orders by customer.\n\n`orders`\n| order_id | customer_id | status |\n| --- | --- | --- |\n| 1 | 10 | completed |'}
                             placeholderTextColor={colors.secondaryText}
                           />
-
-                          <Text style={[styles.blockLabel, { color: colors.secondaryText }]}>
-                            Exercise Schema (JSON)
-                          </Text>
-                          <TextInput
-                            value={block.schemaJson}
-                            onChangeText={(value) =>
-                              updateNote(note.id, (current) => ({
-                                ...current,
-                                sqlBlocks: current.sqlBlocks.map((entry) =>
-                                  entry.id === block.id ? { ...entry, schemaJson: value } : entry,
-                                ),
-                                updatedAt: new Date().toISOString(),
-                              }))
-                            }
-                            multiline
-                            scrollEnabled={false}
-                            style={[
-                              styles.sqlInput,
-                              {
-                                minHeight: 120,
-                                color: colors.primaryText,
-                                backgroundColor: colors.surfaceMuted,
-                              },
-                            ]}
-                            placeholder={'[{"name":"customers","columns":[{"name":"customer_id","type":"INTEGER"},{"name":"customer_name","type":"TEXT"}],"rows":[{"customer_id":1,"customer_name":"Ava"}]}]'}
-                            placeholderTextColor={colors.secondaryText}
-                          />
-                          <Text style={[styles.emptyText, { color: colors.secondaryText }]}>
-                            Include every table, column, and sample row used by the query. This exact schema is used for execution and evaluation.
-                          </Text>
 
                           <Text style={[styles.blockLabel, { color: colors.secondaryText }]}>SQL Query</Text>
                           <TextInput
@@ -717,7 +698,7 @@ export function MyPracticedNotesWorkspace({
                                 backgroundColor: colors.surfaceMuted,
                               },
                             ]}
-                            placeholder="Enter a query that uses the exercise schema above."
+                            placeholder="Enter your SQL query."
                             placeholderTextColor={colors.secondaryText}
                           />
                           <Pressable

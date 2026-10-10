@@ -15,6 +15,7 @@ import {
   ecommerceReportSql,
   ecommerceTables,
 } from "../../../tests/fixtures/my-practiced-notes-ecommerce.js";
+import type { PracticeQuestionContent } from "../../../src/types/sql-practice.js";
 
 let baseUrl: string;
 let server: Server;
@@ -2986,12 +2987,153 @@ test("Add SQL executes and evaluates against the same authored e-commerce schema
         sql: ecommerceReportSql,
       }),
     });
-    assert.equal(missingSchema.status, 400);
-    assert.match(
-      ((await missingSchema.json()) as { error: string }).error,
-      /exercise schema with at least one table/i,
-    );
+    assert.equal(missingSchema.status, 200);
+    const setupResult = await missingSchema.json() as { ok: boolean; errorType: string; error: string };
+    assert.equal(setupResult.ok, false);
+    assert.equal(setupResult.errorType, "setup");
+    assert.match(setupResult.error, /table structure and sample rows/i);
     assert.equal(providerRequests.length, 1, "invalid schema never triggers Gemini evaluation");
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreEnvironment("SUPABASE_URL", previousEnvironment.supabaseUrl);
+    restoreEnvironment("SUPABASE_PUBLISHABLE_KEY", previousEnvironment.supabaseKey);
+    restoreEnvironment("GEMINI_API_KEY", previousEnvironment.geminiKey);
+  }
+});
+
+test("Add SQL parses pasted Markdown once and returns that schema for evaluation", async () => {
+  const originalFetch = globalThis.fetch;
+  const previousEnvironment = {
+    supabaseUrl: process.env.SUPABASE_URL,
+    supabaseKey: process.env.SUPABASE_PUBLISHABLE_KEY,
+    geminiKey: process.env.GEMINI_API_KEY,
+  };
+  const providerRequests: Array<{ messages: Array<{ role: string; content: string }> }> = [];
+  const exerciseText = `List customers in New York.
+
+\`customers\`
+| customer_id | customer_name | city |
+| --- | --- | --- |
+| 1 | Ava Smith | New York |
+| 2 | Ben Ray | Boston |`;
+  process.env.SUPABASE_URL = "https://supabase.test";
+  process.env.SUPABASE_PUBLISHABLE_KEY = "test-publishable-key";
+  process.env.GEMINI_API_KEY = "test-gemini-key";
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url.startsWith(baseUrl)) return originalFetch(input, init);
+    if (url.endsWith("/auth/v1/user")) return new Response(JSON.stringify({ id: "test-user" }), { status: 200 });
+    if (url === "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent") {
+      const request = parseGeminiMockRequest(url, init?.body) as {
+        messages: Array<{ role: string; content: string }>;
+      };
+      providerRequests.push(request);
+      return new Response(geminiMockCompletion(JSON.stringify({
+        reply: "The query matches the pasted exercise.",
+        evaluation: {
+          correctness: "correct",
+          explanation: "The matching customer is returned.",
+          feedback: [],
+        },
+      })), { status: 200 });
+    }
+    throw new Error(`Unexpected outbound request: ${url}`);
+  };
+
+  try {
+    const authorization = { Authorization: ["Bearer", "test-token"].join(" "), "Content-Type": "application/json" };
+    const question = {
+      title: "List customers",
+      prompt: exerciseText,
+      explanation: "Use the provided customer data.",
+      concepts: ["SELECT", "WHERE"],
+      tables: [],
+    };
+    const execute = await fetch(`${baseUrl}/api/practice/execute`, {
+      method: "POST",
+      headers: authorization,
+      body: JSON.stringify({
+        question,
+        exerciseText,
+        sql: "SELECT customer_name FROM customers WHERE city = 'New York'",
+      }),
+    });
+    assert.equal(execute.status, 200);
+    const executionResult = await execute.json() as {
+      ok: boolean;
+      rows: Record<string, unknown>[];
+      resolvedQuestion: PracticeQuestionContent;
+    };
+    assert.deepEqual(executionResult.rows, [{ customer_name: "Ava Smith" }]);
+    assert.deepEqual(executionResult.resolvedQuestion.tables, [{
+      name: "customers",
+      columns: [
+        { name: "customer_id", type: "INTEGER" },
+        { name: "customer_name", type: "TEXT" },
+        { name: "city", type: "TEXT" },
+      ],
+      rows: [
+        { customer_id: 1, customer_name: "Ava Smith", city: "New York" },
+        { customer_id: 2, customer_name: "Ben Ray", city: "Boston" },
+      ],
+    }]);
+    assert.equal(executionResult.resolvedQuestion.prompt, exerciseText);
+
+    const evaluation = await fetch(`${baseUrl}/api/practice/evaluate`, {
+      method: "POST",
+      headers: authorization,
+      body: JSON.stringify({
+        context: {
+          categoryId: "sql-foundations",
+          topicId: "select-statements",
+          subtopicId: "filtering-rows",
+          category: "SQL Foundations",
+          topic: "SELECT Statements",
+          subtopic: "Filtering Rows",
+        },
+        question: executionResult.resolvedQuestion,
+        draftSql: "SELECT customer_name FROM customers WHERE city = 'New York'",
+        execution: {
+          status: "succeeded",
+          sql: "SELECT customer_name FROM customers WHERE city = 'New York'",
+          attemptId: "pasted-exercise:attempt-1",
+          result: executionResult,
+        },
+        history: [],
+        message: "Evaluate the result.",
+      }),
+    });
+    assert.equal(evaluation.status, 200);
+    assert.equal(providerRequests.length, 1);
+    const evaluatorPrompt = providerRequests[0].messages[0].content;
+    assert.ok(evaluatorPrompt.includes(`Exact practice question: ${exerciseText}`));
+    assert.ok(evaluatorPrompt.includes(JSON.stringify(executionResult.resolvedQuestion.tables)));
+    assert.ok(evaluatorPrompt.includes(JSON.stringify(executionResult)));
+
+    const invalidSql = await fetch(`${baseUrl}/api/practice/execute`, {
+      method: "POST",
+      headers: authorization,
+      body: JSON.stringify({ question, exerciseText, sql: "SELECT missing_column FROM customers" }),
+    });
+    const failedExecution = await invalidSql.json() as { ok: boolean; errorType: string; error: string };
+    assert.equal(failedExecution.ok, false);
+    assert.equal(failedExecution.errorType, "execution");
+    assert.match(failedExecution.error, /no such column/i);
+    assert.equal(providerRequests.length, 1, "execution failure does not call the evaluator");
+
+    const noTables = await fetch(`${baseUrl}/api/practice/execute`, {
+      method: "POST",
+      headers: authorization,
+      body: JSON.stringify({
+        question,
+        exerciseText: "List customers who placed orders.",
+        sql: "SELECT * FROM customers",
+      }),
+    });
+    const setupFailure = await noTables.json() as { ok: boolean; errorType: string; error: string };
+    assert.equal(setupFailure.ok, false);
+    assert.equal(setupFailure.errorType, "setup");
+    assert.match(setupFailure.error, /No runnable tables found/i);
   } finally {
     globalThis.fetch = originalFetch;
     restoreEnvironment("SUPABASE_URL", previousEnvironment.supabaseUrl);

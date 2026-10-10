@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
 import { clientEnv } from '@/config/env';
@@ -285,4 +286,89 @@ test('Add SQL rejects missing or malformed schema before making an API request',
   } finally {
     globalThis.fetch = previousFetch;
   }
+});
+
+test('Add SQL sends the pasted exercise text and uses the backend-resolved question for evaluation', async () => {
+  const previousApiUrl = clientEnv.apiUrl;
+  const previousFetch = globalThis.fetch;
+  const source = 'Find customers in New York.\n\n`customers`\n| customer_id | city |\n| --- | --- |\n| 1 | New York |';
+  const question: PracticeQuestionContent = {
+    title: 'Find customers',
+    prompt: source,
+    explanation: 'Use the pasted exercise.',
+    concepts: ['SELECT'],
+    tables: [],
+  };
+  const resolvedQuestion: PracticeQuestionContent = {
+    ...question,
+    tables: [{
+      name: 'customers',
+      columns: [
+        { name: 'customer_id', type: 'INTEGER' },
+        { name: 'city', type: 'TEXT' },
+      ],
+      rows: [{ customer_id: 1, city: 'New York' }],
+    }],
+  };
+  const requests: { url: string; body: Record<string, unknown> }[] = [];
+  clientEnv.apiUrl = 'https://practice-api.test';
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    requests.push({ url, body });
+    return new Response(JSON.stringify(url.endsWith('/api/practice/execute')
+      ? {
+          ok: true,
+          columns: ['customer_id'],
+          rows: [{ customer_id: 1 }],
+          rowLimit: 200,
+          truncated: false,
+          resolvedQuestion,
+        }
+      : { reply: 'The query is evaluated.' }), { status: 200 });
+  };
+
+  try {
+    const result = await runPracticeSql('test-token', question, 'SELECT customer_id FROM customers', source);
+    assert.deepEqual(result.resolvedQuestion, resolvedQuestion);
+    const evaluationQuestion = result.resolvedQuestion;
+    assert.ok(evaluationQuestion);
+    await askPracticeEvaluator({
+      accessToken: 'test-token',
+      context: {
+        category: 'SQL Foundations',
+        topic: 'SELECT Statements',
+        subtopic: 'Filtering Rows',
+        categoryId: 'sql-foundations',
+        topicId: 'select-statements',
+        subtopicId: 'filtering-rows',
+      },
+      question: evaluationQuestion,
+      draftSql: 'SELECT customer_id FROM customers',
+      execution: {
+        status: 'succeeded',
+        sql: 'SELECT customer_id FROM customers',
+        attemptId: 'pasted:attempt-1',
+        result,
+      },
+      history: [],
+      message: 'Evaluate the query.',
+    });
+    assert.equal(requests[0].body.exerciseText, source);
+    assert.deepEqual((requests[0].body.question as PracticeQuestionContent).tables, []);
+    assert.deepEqual((requests[1].body.question as PracticeQuestionContent).tables, resolvedQuestion.tables);
+  } finally {
+    globalThis.fetch = previousFetch;
+    clientEnv.apiUrl = previousApiUrl;
+  }
+});
+
+test('Add SQL presents one paste-and-run exercise field without a schema JSON editor', () => {
+  const workspace = readFileSync(
+    new URL('../components/my-practiced-notes/MyPracticedNotesWorkspace.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(workspace, /Paste your SQL question, table structure and sample data/);
+  assert.match(workspace, /CREATE TABLE statements, Markdown tables, or sample rows together/);
+  assert.doesNotMatch(workspace, /Exercise Schema \(JSON\)/);
 });

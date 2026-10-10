@@ -28,6 +28,7 @@ import {
   validateGeneratedQuestions,
   type GeneratedQuestion,
 } from "./practice-service.js";
+import { parsePracticeExercise, PracticeExerciseSetupError } from "./practice-exercise-parser.js";
 import {
   buildSourceAnalysis,
   isLikelyDuplicate,
@@ -1176,29 +1177,78 @@ app.post("/api/practice/execute", async (request, response) => {
     response.status(400).json({ error: "A valid practice question and SQL statement are required." });
     return;
   }
-  if (
-    !isRecord(request.body.question) ||
-    !Array.isArray(request.body.question.tables) ||
-    request.body.question.tables.length === 0
-  ) {
+  if (!isRecord(request.body.question)) {
     response.status(400).json({
-      error: "Add an exercise schema with at least one table, its columns, and seed rows before running SQL.",
+      error: "Provide a practice question and its exercise tables before running SQL.",
     });
     return;
   }
-  if (!validateGeneratedQuestions([request.body.question], 1)) {
-    response.status(400).json({
-      error: "The exercise schema or practice question is invalid. Check table names, columns, and seed rows.",
+
+  let question: unknown = request.body.question;
+  let includeResolvedQuestion = false;
+  if (request.body.exerciseText !== undefined) {
+    if (typeof request.body.exerciseText !== "string") {
+      response.json({
+        ok: false,
+        columns: [],
+        rows: [],
+        errorType: "setup",
+        error: "Paste the exercise statement and its table structure or sample data in the question box.",
+      });
+      return;
+    }
+    try {
+      const parsedExercise = parsePracticeExercise(request.body.exerciseText);
+      question = {
+        ...request.body.question,
+        prompt: parsedExercise.prompt,
+        tables: parsedExercise.tables,
+      };
+      includeResolvedQuestion = true;
+    } catch (error) {
+      if (!(error instanceof PracticeExerciseSetupError)) throw error;
+      response.json({
+        ok: false,
+        columns: [],
+        rows: [],
+        errorType: "setup",
+        error: error.message,
+      });
+      return;
+    }
+  }
+
+  if (
+    !isRecord(question) ||
+    !Array.isArray(question.tables) ||
+    question.tables.length === 0
+  ) {
+    response.json({
+      ok: false,
+      columns: [],
+      rows: [],
+      errorType: "setup",
+      error: "Add table structure and sample rows to the pasted exercise before running SQL.",
+    });
+    return;
+  }
+  if (!validateGeneratedQuestions([question], 1)) {
+    response.json({
+      ok: false,
+      columns: [],
+      rows: [],
+      errorType: "setup",
+      error: "The exercise table structure or sample rows could not be validated. Check table names, columns, data types, and row values.",
     });
     return;
   }
 
   try {
-    const result = executePracticeSql(
-      request.body.question as GeneratedQuestion,
-      request.body.sql,
-    );
-    response.json(result);
+    const result = executePracticeSql(question as GeneratedQuestion, request.body.sql);
+    response.json({
+      ...result,
+      ...(includeResolvedQuestion ? { resolvedQuestion: question } : {}),
+    });
   } catch (error) {
     response.json({
       ok: false,

@@ -202,10 +202,12 @@ export async function runPracticeSql(
   accessToken: string,
   question: PracticeQuestionContent,
   sql: string,
+  exerciseText?: string,
 ): Promise<SqlPracticeExecutionResult> {
   const result = await requestApi<unknown>('/api/practice/execute', accessToken, {
     question,
     sql,
+    ...(exerciseText === undefined ? {} : { exerciseText }),
   });
   if (
     !isRecord(result) ||
@@ -217,7 +219,9 @@ export async function runPracticeSql(
     (result.error !== undefined && typeof result.error !== 'string') ||
     (result.errorType !== undefined &&
       result.errorType !== 'policy' &&
-      result.errorType !== 'execution')
+      result.errorType !== 'execution' &&
+      result.errorType !== 'setup') ||
+    (result.resolvedQuestion !== undefined && !isPracticeQuestionContent(result.resolvedQuestion))
   ) {
     throw new Error('The SQL engine returned an unexpected response.');
   }

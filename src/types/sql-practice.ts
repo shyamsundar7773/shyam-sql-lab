@@ -33,10 +33,11 @@ export type SqlPracticeExecutionResult = {
   columns: string[];
   rows: Record<string, string | number | boolean | null>[];
   rowsAffected?: number;
-  errorType?: 'policy' | 'execution';
+  errorType?: 'policy' | 'execution' | 'setup';
   rowLimit?: number;
   truncated?: boolean;
   error?: string;
+  resolvedQuestion?: PracticeQuestionContent;
 };
 
 export type PracticeConversationMessage = {
