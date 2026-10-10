@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { ChevronLeft } from 'lucide-react-native';
 import { router } from 'expo-router';
@@ -6,6 +6,7 @@ import { router } from 'expo-router';
 import { MarkdownContent } from '@/components/topic-chat/MarkdownContent';
 import { askPracticeEvaluator, runPracticeSql } from '@/lib/api';
 import { includeLegacyPracticeTables } from '@/lib/my-practiced-sql';
+import { scheduleMyPracticedNotesAutosave } from '@/lib/my-practiced-notes-autosave';
 import {
   createBlankMyPracticedNote,
   getDisplayNoteTitle,
@@ -37,11 +38,11 @@ export function MyPracticedNotesWorkspace({
   const [notes, setNotes] = useState<MyPracticedNote[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
   const [activeNoteId, setActiveNoteId] = useState<string | null>(null);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [selectionMap, setSelectionMap] = useState<Record<string, { start: number; end: number }>>({});
   const [inputHeights, setInputHeights] = useState<Record<string, number>>({});
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const validSelection = useMemo(
     () => resolveMyPracticedNotesSelection({ categoryId, topicId, subtopicId }),
@@ -89,24 +90,35 @@ export function MyPracticedNotesWorkspace({
     if (!validSelection || loading) {
       return;
     }
-    if (saveTimerRef.current) {
-      clearTimeout(saveTimerRef.current);
-    }
-    saveTimerRef.current = setTimeout(() => {
-      setSaving(true);
-      void saveMyPracticedNotes(
+    const cancelPendingSave = scheduleMyPracticedNotesAutosave(
+      notes,
+      () => saveMyPracticedNotes(
         validSelection.categoryId,
         validSelection.topicId,
         validSelection.subtopicId,
         notes,
-      ).finally(() => {
-        setSaving(false);
-      });
-    }, storageDebounceMs);
+      ),
+      {
+        onStart: () => {
+          setSaving(true);
+          setSaveError('');
+        },
+        onSuccess: () => setSaveError(''),
+        onError: (error) => {
+          setSaveError(
+            error instanceof Error && error.message.trim()
+              ? error.message
+              : 'Your changes could not be saved. Edit the note to retry.',
+          );
+        },
+        onSettled: () => {
+          setSaving(false);
+        },
+      },
+      storageDebounceMs,
+    );
     return () => {
-      if (saveTimerRef.current) {
-        clearTimeout(saveTimerRef.current);
-      }
+      cancelPendingSave();
     };
   }, [loading, notes, validSelection]);
 
@@ -515,8 +527,8 @@ export function MyPracticedNotesWorkspace({
                   )}
                 </View>
                 <View style={styles.noteMetaRow}>
-                  <Text style={[styles.savedText, { color: colors.secondaryText }]}>
-                    {saving ? 'Saving...' : '✓ Saved'}
+                  <Text style={[styles.savedText, { color: saveError ? colors.danger : colors.secondaryText }]}>
+                    {saving ? 'Saving...' : saveError ? 'Save failed' : '✓ Saved'}
                   </Text>
                   <Pressable
                     accessibilityRole="button"
@@ -596,6 +608,11 @@ export function MyPracticedNotesWorkspace({
                         placeholder="Write your learning notes here..."
                         placeholderTextColor={colors.secondaryText}
                       />
+                      {saveError ? (
+                        <Text accessibilityRole="alert" style={[styles.errorText, { color: colors.danger }]}>
+                          {saveError} Your changes remain in the editor; edit the note to retry.
+                        </Text>
+                      ) : null}
 
                       <View style={styles.toolbar}>
                         {[
