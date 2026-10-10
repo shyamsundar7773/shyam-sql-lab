@@ -24,7 +24,9 @@ SQLite functions remain blocked by a distinct SQL policy error.
   to Gemini for independent semantic evaluation and learning feedback. A
   successful SQLite execution is not treated as proof that the answer is
   correct; malformed evaluator responses and provider failures are returned as
-  errors, never as successful verdicts.
+  errors, never as successful verdicts. Evaluation responses include an
+  `X-Practice-Evaluation-Request-ID` header; server diagnostics log only the
+  Gemini provider, configured model, invocation outcome, and this request ID.
 
 All protected endpoints require `Authorization: Bearer <Supabase access token>`.
 The practice evaluator is separate from SQL execution; AI responses are never

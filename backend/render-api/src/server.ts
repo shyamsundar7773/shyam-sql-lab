@@ -1,4 +1,5 @@
-﻿import cors from "cors";
+import { randomUUID } from "node:crypto";
+import cors from "cors";
 import dotenv from "dotenv";
 import express, { type ErrorRequestHandler } from "express";
 
@@ -1208,12 +1209,28 @@ app.post("/api/practice/evaluate", async (request, response) => {
     return;
   }
 
+  const requestId = randomUUID();
+  const model = sanitizeProviderIdentifier(resolveGeminiModel(process.env.GEMINI_MODEL));
+  response.setHeader("X-Practice-Evaluation-Request-ID", requestId);
+  response.setHeader("Access-Control-Expose-Headers", "X-Practice-Evaluation-Request-ID");
   const geminiApiKey = process.env.GEMINI_API_KEY?.trim();
   if (!geminiApiKey) {
+    console.info("[SQL practice evaluator]", {
+      provider: "gemini",
+      model,
+      outcome: "not_configured",
+      requestId,
+    });
     response.status(503).json({ error: "AI practice evaluation is not configured yet." });
     return;
   }
 
+  console.info("[SQL practice evaluator]", {
+    provider: "gemini",
+    model,
+    outcome: "started",
+    requestId,
+  });
   try {
     const completion = await requestGeminiCompletion(geminiApiKey, [
       {
@@ -1259,6 +1276,12 @@ app.post("/api/practice/evaluate", async (request, response) => {
     ], 1_500);
     const payload = parseJsonObject(completion);
     if (!payload || !isPracticeEvaluationResponse(payload, input.execution.status === "succeeded")) {
+      console.info("[SQL practice evaluator]", {
+        provider: "gemini",
+        model,
+        outcome: "invalid_response",
+        requestId,
+      });
       response.status(502).json({ error: "The AI evaluator returned an invalid evaluation. Please retry." });
       return;
     }
@@ -1276,21 +1299,18 @@ app.post("/api/practice/evaluate", async (request, response) => {
       evaluation,
       mode: "ai",
     });
+    console.info("[SQL practice evaluator]", {
+      provider: "gemini",
+      model,
+      outcome: "success",
+      requestId,
+    });
   } catch (error) {
-    console.error("[SQL practice evaluator] Gemini request failed", {
-      model: sanitizeProviderIdentifier(resolveGeminiModel(process.env.GEMINI_MODEL)),
-      ...(error instanceof GeminiRequestError
-        ? {
-            category: error.category,
-            status: error.status,
-            providerType: error.providerType,
-          }
-        : {
-            errorType: error instanceof Error ? error.name : typeof error,
-            reason: error instanceof Error
-              ? redactProviderErrorMessage(error.message).slice(0, 300)
-              : "Unknown provider error",
-          }),
+    console.error("[SQL practice evaluator]", {
+      provider: "gemini",
+      model,
+      outcome: "failure",
+      requestId,
     });
     response.status(502).json({ error: "The AI evaluator is temporarily unavailable. Please retry." });
   }

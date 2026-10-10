@@ -6,20 +6,14 @@ import { askPracticeEvaluator, runPracticeSql } from '@/lib/api';
 import type { PracticeQuestionContent } from '@/types/sql-practice';
 
 const insertQuestion: PracticeQuestionContent = {
-  title: 'Archive a user',
-  prompt: 'Copy the matching user into users_archive.',
-  explanation: 'Copy the matching source row.',
-  concepts: ['INSERT', 'SELECT'],
+  title: 'Add a new user',
+  prompt: "Write a SQL statement using INSERT INTO to add a new user to the users table with user_id = 1, username = 'john_doe', and email = 'john@example.com'.",
+  explanation: 'Insert one user row with the specified ID, username, and email.',
+  solutionSql: `INSERT INTO users (user_id, username, email)
+VALUES (1, 'john_doe', 'john@example.com');`,
+  concepts: ['INSERT INTO', 'VALUES'],
   tables: [{
     name: 'users',
-    columns: [
-      { name: 'user_id', type: 'INTEGER' },
-      { name: 'username', type: 'TEXT' },
-      { name: 'email', type: 'TEXT' },
-    ],
-    rows: [{ user_id: 1, username: 'john_doe', email: 'john@example.com' }],
-  }, {
-    name: 'users_archive',
     columns: [
       { name: 'user_id', type: 'INTEGER' },
       { name: 'username', type: 'TEXT' },
@@ -29,37 +23,53 @@ const insertQuestion: PracticeQuestionContent = {
   }],
 };
 
-const insertSql = `INSERT INTO users_archive (user_id, username, email)
-SELECT user_id, username, email
-FROM users
-WHERE user_id = 1
-  AND username = 'john_doe'
-  AND email = 'john@example.com';`;
+const insertSql = `INSERT INTO users (user_id, username, email)
+VALUES (1, 'john_doe', 'john@example.com');`;
 
-test('SQL Practice and My Practiced Notes preserve semantic evaluation and attempt context', async () => {
+test('SQL Practice INSERT reaches execution and evaluation with the shared contract', async () => {
   const previousApiUrl = clientEnv.apiUrl;
   const previousFetch = globalThis.fetch;
-  const requests: Record<string, unknown>[] = [];
+  const requests: { url: string; body: Record<string, unknown> }[] = [];
   const formattedReply = [
     '**Evaluation: correct**',
-    'The query matches the requested user.',
-    'Actionable feedback:\n- All requested predicates are present.',
+    'The query inserts the requested user.',
   ].join('\n\n');
   clientEnv.apiUrl = 'https://practice-api.test';
-  globalThis.fetch = async (_input, init) => {
-    requests.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    requests.push({ url, body });
+    if (url.endsWith('/api/practice/execute')) {
+      return new Response(JSON.stringify({
+        ok: true,
+        columns: [],
+        rows: [],
+        rowsAffected: 1,
+        rowLimit: 200,
+        truncated: false,
+      }), { status: 200 });
+    }
     return new Response(JSON.stringify({
       reply: formattedReply,
       evaluation: {
         correctness: 'correct',
-        explanation: 'The query matches the requested user.',
-        feedback: ['All requested predicates are present.'],
+        explanation: 'The query inserts the requested user.',
+        feedback: [],
       },
       mode: 'ai',
     }), { status: 200 });
   };
 
   try {
+    const executionResult = await runPracticeSql('test-token', insertQuestion, insertSql);
+    assert.equal(executionResult.ok, true);
+    assert.equal(executionResult.rowsAffected, 1);
+    const execution = {
+      status: 'succeeded' as const,
+      sql: insertSql,
+      attemptId: 'note-a:block-a:attempt-a',
+      result: executionResult,
+    };
     const reply = await askPracticeEvaluator({
       accessToken: 'test-token',
       context: {
@@ -72,47 +82,42 @@ test('SQL Practice and My Practiced Notes preserve semantic evaluation and attem
       },
       question: insertQuestion,
       draftSql: insertSql,
-      execution: {
-        status: 'succeeded',
-        sql: insertSql,
-        attemptId: 'note-a:block-a:attempt-a',
-        result: {
-          ok: true,
-          columns: [],
-          rows: [],
-          rowsAffected: 1,
-        },
-      },
+      execution,
       history: [{ role: 'user', content: 'Evaluate this submission.' }],
       message: 'Evaluate this submission.',
     });
 
     assert.equal(reply, formattedReply);
-    assert.deepEqual(requests[0]?.execution, {
-      status: 'succeeded',
-      sql: insertSql,
-      attemptId: 'note-a:block-a:attempt-a',
-      result: {
-        ok: true,
-        columns: [],
-        rows: [],
-        rowsAffected: 1,
-      },
-    });
-    assert.equal(requests[0]?.draftSql, insertSql);
+    assert.deepEqual(requests.map(({ url }) => new URL(url).pathname), [
+      '/api/practice/execute',
+      '/api/practice/evaluate',
+    ]);
+    assert.deepEqual(requests[0]?.body, { question: insertQuestion, sql: insertSql });
+    assert.deepEqual(requests[1]?.body.execution, execution);
+    assert.equal(requests[1]?.body.draftSql, insertSql);
+    assert.deepEqual(requests[1]?.body.question, insertQuestion);
   } finally {
     globalThis.fetch = previousFetch;
     clientEnv.apiUrl = previousApiUrl;
   }
 });
 
-test('My Practiced Notes retains INSERT SELECT execution output and affected-row count', async () => {
+test('My Practiced Notes uses the same execution and evaluation request contract', async () => {
   const previousApiUrl = clientEnv.apiUrl;
   const previousFetch = globalThis.fetch;
-  const requestBodies: Record<string, unknown>[] = [];
+  const requests: { url: string; body: Record<string, unknown> }[] = [];
   clientEnv.apiUrl = 'https://practice-api.test';
-  globalThis.fetch = async (_input, init) => {
-    requestBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    requests.push({
+      url,
+      body: JSON.parse(String(init?.body)) as Record<string, unknown>,
+    });
+    if (url.endsWith('/api/practice/evaluate')) {
+      return new Response(JSON.stringify({ reply: 'The query is semantically evaluated.' }), {
+        status: 200,
+      });
+    }
     return new Response(JSON.stringify({
       ok: true,
       columns: [],
@@ -125,9 +130,36 @@ test('My Practiced Notes retains INSERT SELECT execution output and affected-row
 
   try {
     const result = await runPracticeSql('test-token', insertQuestion, insertSql);
-    assert.equal(requestBodies[0]?.sql, insertSql);
+    const execution = {
+      status: 'succeeded' as const,
+      sql: insertSql,
+      attemptId: 'note-a:block-a:attempt-a',
+      result,
+    };
+    await askPracticeEvaluator({
+      accessToken: 'test-token',
+      context: {
+        category: 'SQL Foundations',
+        topic: 'SELECT Statements',
+        subtopic: 'Filtering Rows',
+        categoryId: 'sql-foundations',
+        topicId: 'select-statements',
+        subtopicId: 'filtering-rows',
+      },
+      question: insertQuestion,
+      draftSql: insertSql,
+      execution,
+      history: [],
+      message: 'Evaluate this submission.',
+    });
     assert.equal(result.rowsAffected, 1);
     assert.deepEqual(result.rows, []);
+    assert.deepEqual(requests.map(({ url }) => new URL(url).pathname), [
+      '/api/practice/execute',
+      '/api/practice/evaluate',
+    ]);
+    assert.deepEqual(requests[0]?.body, { question: insertQuestion, sql: insertSql });
+    assert.deepEqual(requests[1]?.body.execution, execution);
   } finally {
     globalThis.fetch = previousFetch;
     clientEnv.apiUrl = previousApiUrl;

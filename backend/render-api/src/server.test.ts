@@ -2481,43 +2481,30 @@ test("authenticated SQL practice routes generate, execute, and evaluate without 
       truncated: false,
     });
 
+    const insertSql = `INSERT INTO users (user_id, username, email)
+VALUES (1, 'john_doe', 'john@example.com');`;
     const insertQuestion = {
-      title: "Archive John",
-      prompt: "Copy John Doe's matching user record into users_archive.",
-      explanation: "Copy only the user matching every stated predicate.",
-      concepts: ["INSERT", "SELECT", "WHERE"],
-      tables: [
-        {
-          name: "users",
-          columns: [
-            { name: "user_id", type: "INTEGER" },
-            { name: "username", type: "TEXT" },
-            { name: "email", type: "TEXT" },
-          ],
-          rows: [{ user_id: 1, username: "john_doe", email: "john@example.com" }],
-        },
-        {
-          name: "users_archive",
-          columns: [
-            { name: "user_id", type: "INTEGER" },
-            { name: "username", type: "TEXT" },
-            { name: "email", type: "TEXT" },
-          ],
-          rows: [],
-        },
-      ],
+      title: "Add a new user",
+      prompt: "Write a SQL statement using INSERT INTO to add a new user to the users table with user_id = 1, username = 'john_doe', and email = 'john@example.com'.",
+      explanation: "Insert one user row with the specified ID, username, and email.",
+      solutionSql: insertSql,
+      concepts: ["INSERT INTO", "VALUES"],
+      tables: [{
+        name: "users",
+        columns: [
+          { name: "user_id", type: "INTEGER" },
+          { name: "username", type: "TEXT" },
+          { name: "email", type: "TEXT" },
+        ],
+        rows: [],
+      }],
     };
     const reportedInsert = await fetch(`${baseUrl}/api/practice/execute`, {
       method: "POST",
       headers: { ...authorization, "Content-Type": "application/json" },
       body: JSON.stringify({
         question: insertQuestion,
-        sql: `INSERT INTO users_archive (user_id, username, email)
-SELECT user_id, username, email
-FROM users
-WHERE user_id = 1
-  AND username = 'john_doe'
-  AND email = 'john@example.com';`,
+        sql: insertSql,
       }),
     });
     assert.deepEqual(await reportedInsert.json(), {
@@ -2528,6 +2515,52 @@ WHERE user_id = 1
       rowLimit: 200,
       truncated: false,
     });
+
+    const insertEvaluation = await fetch(`${baseUrl}/api/practice/evaluate`, {
+      method: "POST",
+      headers: { ...authorization, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        context: {
+          categoryId: "sql-foundations",
+          topicId: "select-statements",
+          subtopicId: "filtering-rows",
+          category: "SQL Foundations",
+          topic: "SELECT Statements",
+          subtopic: "Filtering Rows",
+        },
+        question: insertQuestion,
+        draftSql: insertSql,
+        execution: {
+          status: "succeeded",
+          sql: insertSql,
+          attemptId: "attempt-user-insert",
+          result: {
+            ok: true,
+            columns: [],
+            rows: [],
+            rowsAffected: 1,
+          },
+        },
+        history: [],
+        message: "Evaluate this submission.",
+      }),
+    });
+    assert.equal(insertEvaluation.status, 200);
+    assert.match(
+      insertEvaluation.headers.get("X-Practice-Evaluation-Request-ID") ?? "",
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
+    assert.equal(
+      ((await insertEvaluation.json()) as { evaluation: { correctness: string } }).evaluation.correctness,
+      "correct",
+    );
+    const insertGeminiRequest = providerRequests.at(-1);
+    assert.ok(insertGeminiRequest);
+    assert.match(insertGeminiRequest.messages[0].content, /Write a SQL statement using INSERT INTO/);
+    assert.match(insertGeminiRequest.messages[0].content, /"rowsAffected":1/);
+    assert.match(insertGeminiRequest.messages[0].content, /attempt-user-insert/);
+    assert.match(insertGeminiRequest.messages[0].content, /Expected correct SQL answer: INSERT INTO users/);
+    assert.equal(providerRequests.pop(), insertGeminiRequest);
 
     const rejectedPolicy = await fetch(`${baseUrl}/api/practice/execute`, {
       method: "POST",

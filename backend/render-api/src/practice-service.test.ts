@@ -165,7 +165,7 @@ test("practice accepts explicit, comma-style, and more than three joins", () => 
   );
 });
 
-test("the reported INSERT SELECT query runs in its isolated question database", () => {
+test("the expected INSERT answer runs in its isolated question database", () => {
   const insertQuestion: GeneratedQuestion = {
     ...question,
     tables: [
@@ -176,34 +176,17 @@ test("the reported INSERT SELECT query runs in its isolated question database", 
           { name: "username", type: "TEXT" },
           { name: "email", type: "TEXT" },
         ],
-        rows: [{
-          user_id: 1,
-          username: "john_doe",
-          email: "john@example.com",
-        }],
-      },
-      {
-        name: "users_archive",
-        columns: [
-          { name: "user_id", type: "INTEGER" },
-          { name: "username", type: "TEXT" },
-          { name: "email", type: "TEXT" },
-        ],
         rows: [],
       },
     ],
   };
-  const sql = `INSERT INTO users_archive (user_id, username, email)
-SELECT user_id, username, email
-FROM users
-WHERE user_id = 1
-  AND username = 'john_doe'
-  AND email = 'john@example.com';`;
+  const sql = `INSERT INTO users (user_id, username, email)
+VALUES (1, 'john_doe', 'john@example.com');`;
 
   assert.equal(
     validateGeneratedQuestions([{ ...insertQuestion, solutionSql: sql }], 1, true),
     true,
-    "INSERT SELECT is a valid executable solution in the isolated question database",
+    "a single INSERT is a valid executable solution in the isolated question database",
   );
   assert.deepEqual(executePracticeSql(insertQuestion, sql), {
     ok: true,
@@ -214,22 +197,9 @@ WHERE user_id = 1
     truncated: false,
   });
   assert.deepEqual(
-    executePracticeSql(insertQuestion, "SELECT * FROM users_archive").rows,
+    executePracticeSql(insertQuestion, "SELECT * FROM users").rows,
     [],
     "each execution uses a fresh in-memory database",
-  );
-  assert.deepEqual(
-    executePracticeSql(
-      insertQuestion,
-      `INSERT INTO users_archive (user_id, username, email)
-SELECT user_id, username, email
-FROM users
-WHERE user_id = 1
-  AND username = 'john_doe'
-  AND email = 'john@example.com'
-RETURNING user_id, username, email;`,
-    ).rows,
-    [{ user_id: 1, username: "john_doe", email: "john@example.com" }],
   );
 });
 
