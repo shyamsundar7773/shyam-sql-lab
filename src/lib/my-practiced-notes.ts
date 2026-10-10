@@ -7,7 +7,7 @@ export type MyPracticedNoteSqlBlock = {
   id: string;
   question: string;
   sql: string;
-  schemaJson: string;
+  legacySchemaJson: string;
   attemptId: string | null;
   status: 'idle' | 'running' | 'success' | 'error';
   output: SqlPracticeExecutionResult | null;
@@ -139,7 +139,7 @@ function normalizeMyPracticedNote(value: unknown): unknown {
           id: `sql-block-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
           question: '',
           sql: '',
-          schemaJson: '',
+          legacySchemaJson: '',
           attemptId: null,
           status: 'idle',
           output: null,
@@ -152,7 +152,12 @@ function normalizeMyPracticedNote(value: unknown): unknown {
         id: typeof current.id === 'string' ? current.id : `sql-block-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
         question: typeof current.question === 'string' ? current.question : '',
         sql: typeof current.sql === 'string' ? current.sql : '',
-        schemaJson: typeof current.schemaJson === 'string' ? current.schemaJson : '',
+        legacySchemaJson:
+          typeof current.legacySchemaJson === 'string'
+            ? current.legacySchemaJson
+            : typeof current.schemaJson === 'string'
+              ? current.schemaJson
+              : '',
         attemptId: typeof current.attemptId === 'string' ? current.attemptId : null,
         status: current.status === 'running' || current.status === 'success' || current.status === 'error'
           ? current.status
@@ -187,7 +192,7 @@ function isMyPracticedNote(value: unknown): value is MyPracticedNote {
         typeof (block as Record<string, unknown>).id === 'string' &&
         typeof (block as Record<string, unknown>).question === 'string' &&
         typeof (block as Record<string, unknown>).sql === 'string' &&
-        typeof (block as Record<string, unknown>).schemaJson === 'string' &&
+        typeof (block as Record<string, unknown>).legacySchemaJson === 'string' &&
         ((block as Record<string, unknown>).attemptId === null ||
           typeof (block as Record<string, unknown>).attemptId === 'string') &&
         ((block as Record<string, unknown>).evaluation === null || typeof (block as Record<string, unknown>).evaluation === 'string') &&

@@ -4,17 +4,8 @@ import { test } from 'node:test';
 
 import { clientEnv } from '@/config/env';
 import { askPracticeEvaluator, runPracticeSql } from '@/lib/api';
-import {
-  buildPracticeQuestionContext,
-  parsePracticeTablesJson,
-  practiceSchemaSetupError,
-} from '@/lib/my-practiced-sql';
+import { includeLegacyPracticeTables } from '@/lib/my-practiced-sql';
 import type { PracticeQuestionContent } from '@/types/sql-practice';
-import {
-  ecommerceQuestion,
-  ecommerceReportSql,
-  ecommerceTables,
-} from '../../tests/fixtures/my-practiced-notes-ecommerce';
 
 const insertQuestion: PracticeQuestionContent = {
   title: 'Add a new user',
@@ -177,138 +168,56 @@ test('My Practiced Notes uses the same execution and evaluation request contract
   }
 });
 
-test('Add SQL sends the authored schema unchanged to execution and semantic evaluation', async () => {
-  const previousApiUrl = clientEnv.apiUrl;
-  const previousFetch = globalThis.fetch;
-  const requests: { url: string; body: Record<string, unknown> }[] = [];
-  clientEnv.apiUrl = 'https://practice-api.test';
-  globalThis.fetch = async (input, init) => {
-    const url = String(input);
-    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
-    requests.push({ url, body });
-    if (url.endsWith('/api/practice/execute')) {
-      return new Response(JSON.stringify({
-        ok: true,
-        columns: [
-          'customer_id',
-          'customer_name',
-          'completed_order_count',
-          'latest_order_date',
-          'completed_spending',
-          'customer_category',
-        ],
-        rows: [],
-        rowLimit: 200,
-        truncated: false,
-      }), { status: 200 });
-    }
-    return new Response(JSON.stringify({ reply: 'The report was evaluated.' }), { status: 200 });
-  };
-
-  try {
-    const tables = parsePracticeTablesJson(JSON.stringify(ecommerceTables));
-    const question = buildPracticeQuestionContext(
-      {
-        categoryId: 'sql-foundations',
-        topicId: 'select-statements',
-        subtopicId: 'filtering-rows',
-      },
-      ecommerceQuestion.prompt,
-      tables,
-    );
-    const result = await runPracticeSql('test-token', question, ecommerceReportSql);
-    await askPracticeEvaluator({
-      accessToken: 'test-token',
-      context: {
-        category: 'SQL Foundations',
-        topic: 'SELECT Statements',
-        subtopic: 'Filtering Rows',
-        categoryId: 'sql-foundations',
-        topicId: 'select-statements',
-        subtopicId: 'filtering-rows',
-      },
-      question,
-      draftSql: ecommerceReportSql,
-      execution: {
-        status: 'succeeded',
-        sql: ecommerceReportSql,
-        attemptId: 'note-ecommerce:sql-report:attempt-1',
-        result,
-      },
-      history: [],
-      message: 'Evaluate this report.',
-    });
-
-    assert.equal(question.prompt, ecommerceQuestion.prompt);
-    assert.deepEqual(question.tables, ecommerceTables);
-    assert.deepEqual(requests.map(({ url }) => new URL(url).pathname), [
-      '/api/practice/execute',
-      '/api/practice/evaluate',
-    ]);
-    assert.deepEqual((requests[0]?.body.question as PracticeQuestionContent).tables, ecommerceTables);
-    assert.deepEqual((requests[1]?.body.question as PracticeQuestionContent).tables, ecommerceTables);
-    assert.deepEqual(
-      (requests[1]?.body.execution as { result: { columns: string[] } }).result.columns,
-      [
-        'customer_id',
-        'customer_name',
-        'completed_order_count',
-        'latest_order_date',
-        'completed_spending',
-        'customer_category',
-      ],
-    );
-  } finally {
-    globalThis.fetch = previousFetch;
-    clientEnv.apiUrl = previousApiUrl;
-  }
-});
-
-test('Add SQL rejects missing or malformed schema before making an API request', async () => {
-  let requestCount = 0;
-  const previousFetch = globalThis.fetch;
-  globalThis.fetch = async () => {
-    requestCount += 1;
-    return new Response('{}', { status: 200 });
-  };
-
-  try {
-    assert.throws(
-      () => parsePracticeTablesJson(''),
-      (error: unknown) => error instanceof Error && error.message === practiceSchemaSetupError,
-    );
-    assert.throws(() => parsePracticeTablesJson('{not json}'), /valid JSON/);
-    assert.throws(
-      () => parsePracticeTablesJson('[]'),
-      (error: unknown) => error instanceof Error && error.message === practiceSchemaSetupError,
-    );
-    assert.equal(requestCount, 0);
-  } finally {
-    globalThis.fetch = previousFetch;
-  }
-});
-
 test('Add SQL sends the pasted exercise text and uses the backend-resolved question for evaluation', async () => {
   const previousApiUrl = clientEnv.apiUrl;
   const previousFetch = globalThis.fetch;
-  const source = 'Find customers in New York.\n\n`customers`\n| customer_id | city |\n| --- | --- |\n| 1 | New York |';
-  const question: PracticeQuestionContent = {
-    title: 'Find customers',
-    prompt: source,
-    explanation: 'Use the pasted exercise.',
-    concepts: ['SELECT'],
-    tables: [],
-  };
+  const source = `Find completed orders for customers in New York.
+
+\`customers\`
+| customer_id | customer_name | city |
+| --- | --- | --- |
+| 1 | Ava Smith | New York |
+| 2 | Ben Ray | Boston |
+
+\`orders\`
+| order_id | customer_id | status |
+| --- | --- | --- |
+| 101 | 1 | completed |
+| 102 | 1 | pending |
+| 103 | 2 | completed |`;
+  const sql = "SELECT customers.customer_name, orders.order_id FROM customers JOIN orders ON orders.customer_id = customers.customer_id WHERE customers.city = 'New York' AND orders.status = 'completed'";
   const resolvedQuestion: PracticeQuestionContent = {
-    ...question,
-    tables: [{
-      name: 'customers',
-      columns: [
-        { name: 'customer_id', type: 'INTEGER' },
-        { name: 'city', type: 'TEXT' },
-      ],
-      rows: [{ customer_id: 1, city: 'New York' }],
-    }],
+    title: 'Pasted SQL exercise',
+    prompt: source,
+    explanation: 'Parsed from the complete exercise text.',
+    concepts: [],
+    tables: [
+      {
+        name: 'customers',
+        columns: [
+          { name: 'customer_id', type: 'INTEGER' },
+          { name: 'customer_name', type: 'TEXT' },
+          { name: 'city', type: 'TEXT' },
+        ],
+        rows: [
+          { customer_id: 1, customer_name: 'Ava Smith', city: 'New York' },
+          { customer_id: 2, customer_name: 'Ben Ray', city: 'Boston' },
+        ],
+      },
+      {
+        name: 'orders',
+        columns: [
+          { name: 'order_id', type: 'INTEGER' },
+          { name: 'customer_id', type: 'INTEGER' },
+          { name: 'status', type: 'TEXT' },
+        ],
+        rows: [
+          { order_id: 101, customer_id: 1, status: 'completed' },
+          { order_id: 102, customer_id: 1, status: 'pending' },
+          { order_id: 103, customer_id: 2, status: 'completed' },
+        ],
+      },
+    ],
   };
   const requests: { url: string; body: Record<string, unknown> }[] = [];
   clientEnv.apiUrl = 'https://practice-api.test';
@@ -319,8 +228,8 @@ test('Add SQL sends the pasted exercise text and uses the backend-resolved quest
     return new Response(JSON.stringify(url.endsWith('/api/practice/execute')
       ? {
           ok: true,
-          columns: ['customer_id'],
-          rows: [{ customer_id: 1 }],
+          columns: ['customer_name', 'order_id'],
+          rows: [{ customer_name: 'Ava Smith', order_id: 101 }],
           rowLimit: 200,
           truncated: false,
           resolvedQuestion,
@@ -329,7 +238,7 @@ test('Add SQL sends the pasted exercise text and uses the backend-resolved quest
   };
 
   try {
-    const result = await runPracticeSql('test-token', question, 'SELECT customer_id FROM customers', source);
+    const result = await runPracticeSql('test-token', source, sql);
     assert.deepEqual(result.resolvedQuestion, resolvedQuestion);
     const evaluationQuestion = result.resolvedQuestion;
     assert.ok(evaluationQuestion);
@@ -344,31 +253,93 @@ test('Add SQL sends the pasted exercise text and uses the backend-resolved quest
         subtopicId: 'filtering-rows',
       },
       question: evaluationQuestion,
-      draftSql: 'SELECT customer_id FROM customers',
+      draftSql: sql,
       execution: {
         status: 'succeeded',
-        sql: 'SELECT customer_id FROM customers',
+        sql,
         attemptId: 'pasted:attempt-1',
-        result,
+        result: {
+          ok: result.ok,
+          columns: result.columns,
+          rows: result.rows,
+          rowLimit: result.rowLimit,
+          truncated: result.truncated,
+        },
       },
       history: [],
       message: 'Evaluate the query.',
     });
-    assert.equal(requests[0].body.exerciseText, source);
-    assert.deepEqual((requests[0].body.question as PracticeQuestionContent).tables, []);
+    assert.deepEqual(requests[0].body, { exerciseText: source, sql });
     assert.deepEqual((requests[1].body.question as PracticeQuestionContent).tables, resolvedQuestion.tables);
+    assert.equal(
+      (requests[1].body.execution as { result: Record<string, unknown> }).result.resolvedQuestion,
+      undefined,
+    );
   } finally {
     globalThis.fetch = previousFetch;
     clientEnv.apiUrl = previousApiUrl;
   }
 });
 
-test('Add SQL presents one paste-and-run exercise field without a schema JSON editor', () => {
+test('Add SQL screen has only question, SQL, and Run SQL controls', () => {
   const workspace = readFileSync(
     new URL('../components/my-practiced-notes/MyPracticedNotesWorkspace.tsx', import.meta.url),
     'utf8',
   );
-  assert.match(workspace, /Paste your SQL question, table structure and sample data/);
-  assert.match(workspace, /CREATE TABLE statements, Markdown tables, or sample rows together/);
-  assert.doesNotMatch(workspace, /Exercise Schema \(JSON\)/);
+  const start = workspace.indexOf('{note.sqlBlocks.map');
+  const end = workspace.indexOf('{note.sqlBlocks.map', start + 1);
+  const editor = workspace.slice(start, end < 0 ? undefined : end);
+  assert.match(editor, /QUESTION \/ REQUIREMENT/);
+  assert.match(editor, /SQL QUERY/);
+  assert.match(editor, /▶ Run SQL/);
+  assert.doesNotMatch(editor, /EXERCISE SCHEMA \(JSON\)/i);
+  assert.doesNotMatch(editor, /schemaJson/i);
+  assert.doesNotMatch(editor, /Schema JSON|schema textarea|TextInput[^]*?schema/i);
+  const route = readFileSync(
+    new URL('../app/my-practiced-notes/editor.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(route, /MyPracticedNotesWorkspace/);
+});
+
+test('legacy saved schema is converted to safe setup text without sending a schema field', async () => {
+  const previousApiUrl = clientEnv.apiUrl;
+  const previousFetch = globalThis.fetch;
+  const exerciseText = includeLegacyPracticeTables('Add the sample customer.', JSON.stringify([{
+    name: 'customers',
+    columns: [{ name: 'customer_id', type: 'INTEGER' }, { name: 'customer_name', type: 'TEXT' }],
+    rows: [{ customer_id: 1, customer_name: "O'Neil, Ada" }],
+  }]));
+  let body: Record<string, unknown> | undefined;
+  clientEnv.apiUrl = 'https://practice-api.test';
+  globalThis.fetch = async (_input, init) => {
+    body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    return new Response(JSON.stringify({
+      ok: true,
+      columns: [],
+      rows: [],
+      rowLimit: 200,
+      truncated: false,
+      resolvedQuestion: {
+        title: 'Pasted SQL exercise',
+        prompt: exerciseText,
+        explanation: 'Parsed from the complete exercise text.',
+        concepts: [],
+        tables: [{
+          name: 'customers',
+          columns: [{ name: 'customer_id', type: 'INTEGER' }, { name: 'customer_name', type: 'TEXT' }],
+          rows: [{ customer_id: 1, customer_name: "O'Neil, Ada" }],
+        }],
+      },
+    }), { status: 200 });
+  };
+  try {
+    await runPracticeSql('test-token', exerciseText, 'SELECT * FROM customers');
+    assert.deepEqual(body, { exerciseText, sql: 'SELECT * FROM customers' });
+    assert.match(exerciseText, /CREATE TABLE customers/);
+    assert.match(exerciseText, /'O''Neil, Ada'/);
+  } finally {
+    globalThis.fetch = previousFetch;
+    clientEnv.apiUrl = previousApiUrl;
+  }
 });

@@ -5,10 +5,7 @@ import { router } from 'expo-router';
 
 import { MarkdownContent } from '@/components/topic-chat/MarkdownContent';
 import { askPracticeEvaluator, runPracticeSql } from '@/lib/api';
-import {
-  buildPracticeQuestionContext,
-  parsePracticeTablesJson,
-} from '@/lib/my-practiced-sql';
+import { includeLegacyPracticeTables } from '@/lib/my-practiced-sql';
 import {
   createBlankMyPracticedNote,
   getDisplayNoteTitle,
@@ -233,7 +230,7 @@ export function MyPracticedNotesWorkspace({
         id: `sql-block-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
         question: '',
         sql: '',
-        schemaJson: '',
+        legacySchemaJson: '',
         attemptId: null,
         status: 'idle',
         output: null,
@@ -283,16 +280,10 @@ export function MyPracticedNotesWorkspace({
     const blockSql = targetBlock.sql;
 
     try {
-      const hasLegacySchema = targetBlock.schemaJson.trim().length > 0;
-      const tables = hasLegacySchema ? parsePracticeTablesJson(targetBlock.schemaJson) : [];
-      const payload = buildPracticeQuestionContext(targetNote, targetBlock.question, tables);
-      const result = await runPracticeSql(
-        session.access_token,
-        payload,
-        blockSql,
-        hasLegacySchema ? undefined : targetBlock.question,
-      );
-      const evaluationQuestion = result.resolvedQuestion ?? payload;
+      const exerciseText = targetBlock.legacySchemaJson.trim()
+        ? includeLegacyPracticeTables(targetBlock.question, targetBlock.legacySchemaJson)
+        : targetBlock.question;
+      const result = await runPracticeSql(session.access_token, exerciseText, blockSql);
       const executionResult = { ...result };
       delete executionResult.resolvedQuestion;
 
@@ -317,12 +308,14 @@ export function MyPracticedNotesWorkspace({
       let evaluation: string | null = null;
       if (!result.ok) {
         evaluation = `Not evaluated. ${result.error ?? 'The SQL statement could not be executed.'}`;
+      } else if (!result.resolvedQuestion) {
+        throw new Error('The SQL engine did not return the parsed exercise for evaluation.');
       } else {
         try {
           evaluation = await askPracticeEvaluator({
             accessToken: session.access_token,
             context,
-            question: evaluationQuestion,
+            question: result.resolvedQuestion,
             draftSql: blockSql,
             execution,
             history: [],
@@ -632,10 +625,10 @@ export function MyPracticedNotesWorkspace({
                       {note.sqlBlocks.map((block) => (
                         <View key={block.id} style={[styles.sqlBlock, { backgroundColor: colors.background, borderColor: colors.border }]}>
                           <Text style={[styles.blockLabel, { color: colors.secondaryText }]}>
-                            Paste your SQL question, table structure and sample data
+                            QUESTION / REQUIREMENT
                           </Text>
                           <Text style={[styles.emptyText, { color: colors.secondaryText }]}>
-                            You can paste the complete question, CREATE TABLE statements, Markdown tables, or sample rows together.
+                            Paste the complete exercise, including its table details and sample data.
                           </Text>
                           <TextInput
                             value={block.question}
@@ -669,7 +662,7 @@ export function MyPracticedNotesWorkspace({
                             placeholderTextColor={colors.secondaryText}
                           />
 
-                          <Text style={[styles.blockLabel, { color: colors.secondaryText }]}>SQL Query</Text>
+                          <Text style={[styles.blockLabel, { color: colors.secondaryText }]}>SQL QUERY</Text>
                           <TextInput
                             value={block.sql}
                             onChangeText={(value) =>

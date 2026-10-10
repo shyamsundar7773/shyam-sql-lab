@@ -1177,30 +1177,43 @@ app.post("/api/practice/execute", async (request, response) => {
     response.status(400).json({ error: "A valid practice question and SQL statement are required." });
     return;
   }
-  if (!isRecord(request.body.question)) {
+  if (
+    request.body.exerciseText !== undefined &&
+    typeof request.body.exerciseText !== "string"
+  ) {
+    response.json({
+      ok: false,
+      columns: [],
+      rows: [],
+      errorType: "setup",
+      error: "Paste the exercise statement and its table structure or sample data in the question box.",
+    });
+    return;
+  }
+  const hasExerciseText = typeof request.body.exerciseText === "string";
+  if (
+    (!hasExerciseText && !isRecord(request.body.question)) ||
+    (request.body.question !== undefined && !isRecord(request.body.question))
+  ) {
     response.status(400).json({
-      error: "Provide a practice question and its exercise tables before running SQL.",
+      error: "Provide the complete exercise text or a practice question with its exercise tables.",
     });
     return;
   }
 
   let question: unknown = request.body.question;
   let includeResolvedQuestion = false;
-  if (request.body.exerciseText !== undefined) {
-    if (typeof request.body.exerciseText !== "string") {
-      response.json({
-        ok: false,
-        columns: [],
-        rows: [],
-        errorType: "setup",
-        error: "Paste the exercise statement and its table structure or sample data in the question box.",
-      });
-      return;
-    }
+  if (typeof request.body.exerciseText === "string") {
     try {
       const parsedExercise = parsePracticeExercise(request.body.exerciseText);
       question = {
-        ...request.body.question,
+        ...(isRecord(request.body.question)
+          ? request.body.question
+          : {
+              title: "Pasted SQL exercise",
+              explanation: "Parsed from the complete exercise text.",
+              concepts: [],
+            }),
         prompt: parsedExercise.prompt,
         tables: parsedExercise.tables,
       };

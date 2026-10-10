@@ -1,13 +1,11 @@
-import { sqlLearningCategories } from "@/data/sqlLearningContent";
-import type { MyPracticedNote } from "@/lib/my-practiced-notes";
-import type { PracticeQuestionContent, PracticeTable } from "@/types/sql-practice";
+import type { PracticeTable } from "@/types/sql-practice";
 
 const maximumSchemaJsonLength = 100_000;
 const schemaIdentifierPattern = /^[A-Za-z_][A-Za-z0-9_]{0,47}$/;
 const schemaTypes = new Set(["TEXT", "INTEGER", "REAL", "BOOLEAN"]);
 
 export const practiceSchemaSetupError =
-  "Add a valid exercise schema as JSON (1-4 tables with column definitions and seed rows) before running SQL.";
+  "Saved exercise data could not be restored. Paste the table definitions and sample rows into the question box.";
 
 export function parsePracticeTablesJson(schemaJson: string): PracticeTable[] {
   if (!schemaJson.trim() || schemaJson.length > maximumSchemaJsonLength) {
@@ -18,7 +16,7 @@ export function parsePracticeTablesJson(schemaJson: string): PracticeTable[] {
   try {
     value = JSON.parse(schemaJson) as unknown;
   } catch {
-    throw new Error("Exercise schema must be valid JSON. Add tables, columns, and seed rows before running SQL.");
+    throw new Error("Saved exercise data could not be restored. Paste the table definitions and sample rows into the question box.");
   }
 
   if (
@@ -44,25 +42,29 @@ export function parsePracticeTablesJson(schemaJson: string): PracticeTable[] {
   return value;
 }
 
-export function buildPracticeQuestionContext(
-  note: Pick<MyPracticedNote, "categoryId" | "topicId" | "subtopicId">,
-  questionText: string | undefined,
-  tables: PracticeTable[],
-): PracticeQuestionContent {
-  const category = sqlLearningCategories.find((item) => item.id === note.categoryId) ?? null;
-  const topic = category?.topics.find((item) => item.id === note.topicId) ?? null;
-  const subtopic = topic?.subtopics.find((item) => item.id === note.subtopicId) ?? null;
-  const trimmedQuestion = questionText?.trim() ?? "";
-  const fallbackPrompt = subtopic?.definition ?? topic?.summary ?? "Review this SQL concept and practice your query.";
-  const fallbackTitle = subtopic?.title ?? "SQL practice";
+export function includeLegacyPracticeTables(questionText: string, schemaJson: string): string {
+  const tables = parsePracticeTablesJson(schemaJson);
+  const definitions = tables.map((table) => {
+    const columns = table.columns
+      .map((column) => `${column.name} ${column.type}`)
+      .join(", ");
+    const inserts = table.rows.length
+      ? `\nINSERT INTO ${table.name} (${table.columns.map((column) => column.name).join(", ")}) VALUES\n` +
+        table.rows
+          .map((row) => `  (${table.columns.map((column) => formatSqlLiteral(row[column.name])).join(", ")})`)
+          .join(",\n") +
+        ";"
+      : "";
+    return `CREATE TABLE ${table.name} (${columns});${inserts}`;
+  });
+  return [questionText.trim(), ...definitions].filter(Boolean).join("\n\n");
+}
 
-  return {
-    title: trimmedQuestion ? trimmedQuestion.slice(0, 120) : fallbackTitle,
-    prompt: trimmedQuestion || fallbackPrompt,
-    explanation: subtopic?.explanation?.join(" ") ?? topic?.summary ?? "Use SQL to interact with the learning topic.",
-    concepts: subtopic?.keyPoints ?? topic?.keyPoints ?? ["SQL basics"],
-    tables,
-  };
+function formatSqlLiteral(value: string | number | boolean | null): string {
+  if (value === null) return "NULL";
+  if (typeof value === "string") return `'${value.replace(/'/g, "''")}'`;
+  if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
+  return String(value);
 }
 
 function isPracticeTable(value: unknown): value is PracticeTable {

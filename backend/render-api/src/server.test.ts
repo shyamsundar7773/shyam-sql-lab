@@ -3009,13 +3009,20 @@ test("Add SQL parses pasted Markdown once and returns that schema for evaluation
     geminiKey: process.env.GEMINI_API_KEY,
   };
   const providerRequests: Array<{ messages: Array<{ role: string; content: string }> }> = [];
-  const exerciseText = `List customers in New York.
+  const exerciseText = `List completed orders placed by customers in New York.
 
 \`customers\`
 | customer_id | customer_name | city |
 | --- | --- | --- |
 | 1 | Ava Smith | New York |
-| 2 | Ben Ray | Boston |`;
+| 2 | Ben Ray | Boston |
+
+\`orders\`
+| order_id | customer_id | status |
+| --- | --- | --- |
+| 101 | 1 | completed |
+| 102 | 1 | pending |
+| 103 | 2 | completed |`;
   process.env.SUPABASE_URL = "https://supabase.test";
   process.env.SUPABASE_PUBLISHABLE_KEY = "test-publishable-key";
   process.env.GEMINI_API_KEY = "test-gemini-key";
@@ -3042,29 +3049,23 @@ test("Add SQL parses pasted Markdown once and returns that schema for evaluation
 
   try {
     const authorization = { Authorization: ["Bearer", "test-token"].join(" "), "Content-Type": "application/json" };
-    const question = {
-      title: "List customers",
-      prompt: exerciseText,
-      explanation: "Use the provided customer data.",
-      concepts: ["SELECT", "WHERE"],
-      tables: [],
-    };
     const execute = await fetch(`${baseUrl}/api/practice/execute`, {
       method: "POST",
       headers: authorization,
       body: JSON.stringify({
-        question,
         exerciseText,
-        sql: "SELECT customer_name FROM customers WHERE city = 'New York'",
+        sql: "SELECT customers.customer_name, orders.order_id FROM customers JOIN orders ON orders.customer_id = customers.customer_id WHERE customers.city = 'New York' AND orders.status = 'completed'",
       }),
     });
     assert.equal(execute.status, 200);
     const executionResult = await execute.json() as {
       ok: boolean;
+      columns: string[];
       rows: Record<string, unknown>[];
       resolvedQuestion: PracticeQuestionContent;
     };
-    assert.deepEqual(executionResult.rows, [{ customer_name: "Ava Smith" }]);
+    assert.deepEqual(executionResult.columns, ["customer_name", "order_id"]);
+    assert.deepEqual(executionResult.rows, [{ customer_name: "Ava Smith", order_id: 101 }]);
     assert.deepEqual(executionResult.resolvedQuestion.tables, [{
       name: "customers",
       columns: [
@@ -3076,9 +3077,23 @@ test("Add SQL parses pasted Markdown once and returns that schema for evaluation
         { customer_id: 1, customer_name: "Ava Smith", city: "New York" },
         { customer_id: 2, customer_name: "Ben Ray", city: "Boston" },
       ],
+    }, {
+      name: "orders",
+      columns: [
+        { name: "order_id", type: "INTEGER" },
+        { name: "customer_id", type: "INTEGER" },
+        { name: "status", type: "TEXT" },
+      ],
+      rows: [
+        { order_id: 101, customer_id: 1, status: "completed" },
+        { order_id: 102, customer_id: 1, status: "pending" },
+        { order_id: 103, customer_id: 2, status: "completed" },
+      ],
     }]);
     assert.equal(executionResult.resolvedQuestion.prompt, exerciseText);
 
+    const executionPayload = { ...executionResult };
+    delete (executionPayload as { resolvedQuestion?: PracticeQuestionContent }).resolvedQuestion;
     const evaluation = await fetch(`${baseUrl}/api/practice/evaluate`, {
       method: "POST",
       headers: authorization,
@@ -3092,12 +3107,12 @@ test("Add SQL parses pasted Markdown once and returns that schema for evaluation
           subtopic: "Filtering Rows",
         },
         question: executionResult.resolvedQuestion,
-        draftSql: "SELECT customer_name FROM customers WHERE city = 'New York'",
+        draftSql: "SELECT customers.customer_name, orders.order_id FROM customers JOIN orders ON orders.customer_id = customers.customer_id WHERE customers.city = 'New York' AND orders.status = 'completed'",
         execution: {
           status: "succeeded",
-          sql: "SELECT customer_name FROM customers WHERE city = 'New York'",
+          sql: "SELECT customers.customer_name, orders.order_id FROM customers JOIN orders ON orders.customer_id = customers.customer_id WHERE customers.city = 'New York' AND orders.status = 'completed'",
           attemptId: "pasted-exercise:attempt-1",
-          result: executionResult,
+          result: executionPayload,
         },
         history: [],
         message: "Evaluate the result.",
@@ -3108,12 +3123,12 @@ test("Add SQL parses pasted Markdown once and returns that schema for evaluation
     const evaluatorPrompt = providerRequests[0].messages[0].content;
     assert.ok(evaluatorPrompt.includes(`Exact practice question: ${exerciseText}`));
     assert.ok(evaluatorPrompt.includes(JSON.stringify(executionResult.resolvedQuestion.tables)));
-    assert.ok(evaluatorPrompt.includes(JSON.stringify(executionResult)));
+    assert.ok(evaluatorPrompt.includes(JSON.stringify(executionPayload)));
 
     const invalidSql = await fetch(`${baseUrl}/api/practice/execute`, {
       method: "POST",
       headers: authorization,
-      body: JSON.stringify({ question, exerciseText, sql: "SELECT missing_column FROM customers" }),
+      body: JSON.stringify({ exerciseText, sql: "SELECT missing_column FROM customers" }),
     });
     const failedExecution = await invalidSql.json() as { ok: boolean; errorType: string; error: string };
     assert.equal(failedExecution.ok, false);
@@ -3125,7 +3140,6 @@ test("Add SQL parses pasted Markdown once and returns that schema for evaluation
       method: "POST",
       headers: authorization,
       body: JSON.stringify({
-        question,
         exerciseText: "List customers who placed orders.",
         sql: "SELECT * FROM customers",
       }),
@@ -3134,6 +3148,21 @@ test("Add SQL parses pasted Markdown once and returns that schema for evaluation
     assert.equal(setupFailure.ok, false);
     assert.equal(setupFailure.errorType, "setup");
     assert.match(setupFailure.error, /No runnable tables found/i);
+    assert.equal(providerRequests.length, 1, "missing sample tables do not call Gemini");
+
+    const ambiguousExercise = await fetch(`${baseUrl}/api/practice/execute`, {
+      method: "POST",
+      headers: authorization,
+      body: JSON.stringify({
+        exerciseText: "List customers.\n| id | name |\n| --- | --- |\n| 1 | Ava |",
+        sql: "SELECT * FROM customers",
+      }),
+    });
+    const ambiguousSetup = await ambiguousExercise.json() as { ok: boolean; errorType: string; error: string };
+    assert.equal(ambiguousSetup.ok, false);
+    assert.equal(ambiguousSetup.errorType, "setup");
+    assert.match(ambiguousSetup.error, /table name immediately above/i);
+    assert.equal(providerRequests.length, 1, "ambiguous table input does not call Gemini");
   } finally {
     globalThis.fetch = originalFetch;
     restoreEnvironment("SUPABASE_URL", previousEnvironment.supabaseUrl);
