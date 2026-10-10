@@ -1172,13 +1172,24 @@ app.post("/api/practice/execute", async (request, response) => {
   if (!(await verifyAccessToken(request, response))) {
     return;
   }
-  if (
-    !isRecord(request.body) ||
-    typeof request.body.sql !== "string" ||
-    request.body.sql.length > 10_000 ||
-    !validateGeneratedQuestions([request.body.question], 1)
-  ) {
+  if (!isRecord(request.body) || typeof request.body.sql !== "string" || request.body.sql.length > 10_000) {
     response.status(400).json({ error: "A valid practice question and SQL statement are required." });
+    return;
+  }
+  if (
+    !isRecord(request.body.question) ||
+    !Array.isArray(request.body.question.tables) ||
+    request.body.question.tables.length === 0
+  ) {
+    response.status(400).json({
+      error: "Add an exercise schema with at least one table, its columns, and seed rows before running SQL.",
+    });
+    return;
+  }
+  if (!validateGeneratedQuestions([request.body.question], 1)) {
+    response.status(400).json({
+      error: "The exercise schema or practice question is invalid. Check table names, columns, and seed rows.",
+    });
     return;
   }
 

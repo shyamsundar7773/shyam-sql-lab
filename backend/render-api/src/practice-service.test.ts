@@ -6,6 +6,11 @@ import {
   validateGeneratedQuestions,
   type GeneratedQuestion,
 } from "./practice-service.js";
+import {
+  ecommerceExpectedRows,
+  ecommerceQuestion,
+  ecommerceReportSql,
+} from "../../../tests/fixtures/my-practiced-notes-ecommerce.js";
 
 const question: GeneratedQuestion = {
   title: "Active customers",
@@ -201,6 +206,24 @@ VALUES (1, 'john_doe', 'john@example.com');`;
     [],
     "each execution uses a fresh in-memory database",
   );
+});
+
+test("the Add SQL e-commerce report uses the supplied schema and returns exact aggregates", () => {
+  assert.deepEqual(validateGeneratedQuestions([ecommerceQuestion], 1), true);
+  assert.deepEqual(executePracticeSql(ecommerceQuestion, ecommerceReportSql), {
+    ok: true,
+    columns: [
+      "customer_id",
+      "customer_name",
+      "completed_order_count",
+      "latest_order_date",
+      "completed_spending",
+      "customer_category",
+    ],
+    rows: ecommerceExpectedRows,
+    rowLimit: 200,
+    truncated: false,
+  });
 });
 
 test("practice preserves SQLite syntax errors separately from policy rejections", () => {

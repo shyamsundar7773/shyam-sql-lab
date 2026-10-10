@@ -1,12 +1,13 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { sqlLearningCategories } from '@/data/sqlLearningContent';
-import type { PracticeQuestionContent, SqlPracticeExecutionResult } from '@/types/sql-practice';
+import type { SqlPracticeExecutionResult } from '@/types/sql-practice';
 
 export type MyPracticedNoteSqlBlock = {
   id: string;
   question: string;
   sql: string;
+  schemaJson: string;
   attemptId: string | null;
   status: 'idle' | 'running' | 'success' | 'error';
   output: SqlPracticeExecutionResult | null;
@@ -67,41 +68,6 @@ export async function saveMyPracticedNotes(
 ): Promise<void> {
   const key = getMyPracticedNotesStorageKey(categoryId, topicId, subtopicId);
   await AsyncStorage.setItem(key, JSON.stringify(notes));
-}
-
-export function buildPracticeQuestionContext(
-  note: Pick<MyPracticedNote, 'categoryId' | 'topicId' | 'subtopicId'>,
-  questionText?: string,
-): PracticeQuestionContent {
-  const category = sqlLearningCategories.find((item) => item.id === note.categoryId) ?? null;
-  const topic = category?.topics.find((item) => item.id === note.topicId) ?? null;
-  const subtopic = topic?.subtopics.find((item) => item.id === note.subtopicId) ?? null;
-  const trimmedQuestion = questionText?.trim() ?? '';
-  const fallbackPrompt = subtopic?.definition ?? topic?.summary ?? 'Review this SQL concept and practice your query.';
-  const fallbackTitle = subtopic?.title ?? 'SQL practice';
-
-  return {
-    title: trimmedQuestion ? trimmedQuestion.slice(0, 120) : fallbackTitle,
-    prompt: trimmedQuestion || fallbackPrompt,
-    explanation: subtopic?.explanation?.join(' ') ?? topic?.summary ?? 'Use SQL to interact with the learning topic.',
-    concepts: subtopic?.keyPoints ?? topic?.keyPoints ?? ['SQL basics'],
-    tables: [
-      {
-        name: 'employees',
-        columns: [
-          { name: 'id', type: 'INTEGER' },
-          { name: 'name', type: 'TEXT' },
-          { name: 'department', type: 'TEXT' },
-          { name: 'salary', type: 'INTEGER' },
-        ],
-        rows: [
-          { id: 1, name: 'Asha', department: 'Sales', salary: 62000 },
-          { id: 2, name: 'Ben', department: 'HR', salary: 48000 },
-          { id: 3, name: 'Chen', department: 'Sales', salary: 54000 },
-        ],
-      },
-    ],
-  };
 }
 
 export function createBlankMyPracticedNote(
@@ -173,6 +139,7 @@ function normalizeMyPracticedNote(value: unknown): unknown {
           id: `sql-block-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
           question: '',
           sql: '',
+          schemaJson: '',
           attemptId: null,
           status: 'idle',
           output: null,
@@ -185,6 +152,7 @@ function normalizeMyPracticedNote(value: unknown): unknown {
         id: typeof current.id === 'string' ? current.id : `sql-block-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
         question: typeof current.question === 'string' ? current.question : '',
         sql: typeof current.sql === 'string' ? current.sql : '',
+        schemaJson: typeof current.schemaJson === 'string' ? current.schemaJson : '',
         attemptId: typeof current.attemptId === 'string' ? current.attemptId : null,
         status: current.status === 'running' || current.status === 'success' || current.status === 'error'
           ? current.status
@@ -219,6 +187,7 @@ function isMyPracticedNote(value: unknown): value is MyPracticedNote {
         typeof (block as Record<string, unknown>).id === 'string' &&
         typeof (block as Record<string, unknown>).question === 'string' &&
         typeof (block as Record<string, unknown>).sql === 'string' &&
+        typeof (block as Record<string, unknown>).schemaJson === 'string' &&
         ((block as Record<string, unknown>).attemptId === null ||
           typeof (block as Record<string, unknown>).attemptId === 'string') &&
         ((block as Record<string, unknown>).evaluation === null || typeof (block as Record<string, unknown>).evaluation === 'string') &&

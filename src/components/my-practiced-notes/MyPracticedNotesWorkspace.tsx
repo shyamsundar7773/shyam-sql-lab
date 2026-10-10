@@ -7,6 +7,9 @@ import { MarkdownContent } from '@/components/topic-chat/MarkdownContent';
 import { askPracticeEvaluator, runPracticeSql } from '@/lib/api';
 import {
   buildPracticeQuestionContext,
+  parsePracticeTablesJson,
+} from '@/lib/my-practiced-sql';
+import {
   createBlankMyPracticedNote,
   getDisplayNoteTitle,
   loadMyPracticedNotes,
@@ -229,7 +232,8 @@ export function MyPracticedNotesWorkspace({
       const nextBlock: MyPracticedNoteSqlBlock = {
         id: `sql-block-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
         question: '',
-        sql: 'SELECT *\nFROM employees;',
+        sql: '',
+        schemaJson: '',
         attemptId: null,
         status: 'idle',
         output: null,
@@ -279,7 +283,8 @@ export function MyPracticedNotesWorkspace({
     const blockSql = targetBlock.sql;
 
     try {
-      const payload = buildPracticeQuestionContext(targetNote, targetBlock.question);
+      const tables = parsePracticeTablesJson(targetBlock.schemaJson);
+      const payload = buildPracticeQuestionContext(targetNote, targetBlock.question, tables);
       const result = await runPracticeSql(
         session.access_token,
         payload,
@@ -307,7 +312,9 @@ export function MyPracticedNotesWorkspace({
       } satisfies PracticeEvaluatorExecution;
 
       let evaluation: string | null = null;
-      if (result.errorType !== 'policy') {
+      if (!result.ok) {
+        evaluation = `Not evaluated. ${result.error ?? 'The SQL statement could not be executed.'}`;
+      } else {
         try {
           evaluation = await askPracticeEvaluator({
             accessToken: session.access_token,
@@ -349,7 +356,7 @@ export function MyPracticedNotesWorkspace({
                   rows: [],
                   error: message,
                 },
-                evaluation: message,
+                evaluation: `Not evaluated. ${message}`,
               }
             : block,
         ),
@@ -646,9 +653,40 @@ export function MyPracticedNotesWorkspace({
                                 backgroundColor: colors.surfaceMuted,
                               },
                             ]}
-                            placeholder="Find all employees who belong to the Sales department."
+                            placeholder="Describe the SQL task and its requirements."
                             placeholderTextColor={colors.secondaryText}
                           />
+
+                          <Text style={[styles.blockLabel, { color: colors.secondaryText }]}>
+                            Exercise Schema (JSON)
+                          </Text>
+                          <TextInput
+                            value={block.schemaJson}
+                            onChangeText={(value) =>
+                              updateNote(note.id, (current) => ({
+                                ...current,
+                                sqlBlocks: current.sqlBlocks.map((entry) =>
+                                  entry.id === block.id ? { ...entry, schemaJson: value } : entry,
+                                ),
+                                updatedAt: new Date().toISOString(),
+                              }))
+                            }
+                            multiline
+                            scrollEnabled={false}
+                            style={[
+                              styles.sqlInput,
+                              {
+                                minHeight: 120,
+                                color: colors.primaryText,
+                                backgroundColor: colors.surfaceMuted,
+                              },
+                            ]}
+                            placeholder={'[{"name":"customers","columns":[{"name":"customer_id","type":"INTEGER"},{"name":"customer_name","type":"TEXT"}],"rows":[{"customer_id":1,"customer_name":"Ava"}]}]'}
+                            placeholderTextColor={colors.secondaryText}
+                          />
+                          <Text style={[styles.emptyText, { color: colors.secondaryText }]}>
+                            Include every table, column, and sample row used by the query. This exact schema is used for execution and evaluation.
+                          </Text>
 
                           <Text style={[styles.blockLabel, { color: colors.secondaryText }]}>SQL Query</Text>
                           <TextInput
@@ -679,7 +717,7 @@ export function MyPracticedNotesWorkspace({
                                 backgroundColor: colors.surfaceMuted,
                               },
                             ]}
-                            placeholder="SELECT *\nFROM employees;"
+                            placeholder="Enter a query that uses the exercise schema above."
                             placeholderTextColor={colors.secondaryText}
                           />
                           <Pressable
